@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chrono Secretary — 个人日程与截止备忘助手</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.27/dist/vue.global.prod.js"></script>
+<style>
+  [v-cloak] { display: none; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background-color: #FAFAFA;
+    color: #09090B;
+    -webkit-font-smoothing: antialiased;
+  }
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+  .panel {
+    background: #FFFFFF;
+    border: 1px solid #E4E4E7;
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  }
+  .input-base {
+    width: 100%;
+    border: 1px solid #E4E4E7;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    background: #FFFFFF;
+    color: #09090B;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .input-base:focus {
+    outline: none;
+    border-color: #18181B;
+    box-shadow: 0 0 0 2px rgba(24, 24, 27, 0.08);
+  }
+  .input-base::placeholder { color: #A1A1AA; }
+  .btn-dark {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem;
+    background: #18181B; color: #FFFFFF;
+    border: 1px solid #18181B; border-radius: 8px;
+    padding: 0.45rem 0.85rem; font-size: 0.8125rem; font-weight: 500;
+    transition: background 0.15s ease, opacity 0.15s ease;
+  }
+  .btn-dark:hover:not(:disabled) { background: #27272A; }
+  .btn-dark:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-outline {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem;
+    background: #FFFFFF; color: #3F3F46;
+    border: 1px solid #E4E4E7; border-radius: 8px;
+    padding: 0.45rem 0.85rem; font-size: 0.8125rem; font-weight: 500;
+    transition: all 0.15s ease;
+  }
+  .btn-outline:hover:not(:disabled) { background: #F4F4F5; color: #09090B; border-color: #D4D4D8; }
+  .btn-outline:disabled { opacity: 0.5; cursor: not-allowed; }
+  .tag-pill {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    border-radius: 6px; border: 1px solid #E4E4E7;
+    background: #FAFAFA; color: #52525B;
+    padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 500;
+    cursor: pointer; transition: all 0.12s ease; user-select: none;
+  }
+  .tag-pill:hover { border-color: #A1A1AA; color: #09090B; }
+  .tag-pill.active {
+    background: #18181B; border-color: #18181B; color: #FFFFFF;
+  }
+  .thin-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
+  .thin-scroll::-webkit-scrollbar-thumb { background: #D4D4D8; border-radius: 9999px; }
+  .thin-scroll::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app" v-cloak class="min-h-screen flex flex-col">
+
+  <!-- 顶部极简导航栏 (Linear / Vercel 风格) -->
+  <header class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-zinc-200/80">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-6">
+        <div class="flex items-center gap-2.5">
+          <div class="h-7 w-7 rounded-lg bg-zinc-900 text-white grid place-items-center text-xs font-semibold tracking-tight">C</div>
+          <span class="font-semibold text-sm tracking-tight text-zinc-900">Chrono</span>
+          <span class="text-[11px] text-zinc-400 border border-zinc-200 rounded px-1.5 py-0.5 hidden sm:inline">Secretary</span>
+        </div>
+
+        <nav class="flex items-center gap-1">
+          <button v-for="tab in tabs" :key="tab.key" @click="switchTab(tab.key)"
+            class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5"
+            :class="activeTab === tab.key ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'">
+            <i :class="tab.icon" class="text-[11px]"></i>
+            <span>{{ tab.label }}</span>
+            <span v-if="tab.key === 'board' && pendingTasks.length"
+              class="ml-0.5 px-1.5 py-0.2 rounded text-[10px] tabular-nums"
+              :class="activeTab === 'board' ? 'bg-white/20 text-white' : 'bg-zinc-200/80 text-zinc-700'">
+              {{ pendingTasks.length }}
+            </span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- 右侧：自动保存状态 + 渠道在线状态 -->
+      <div class="flex items-center gap-3 text-xs">
+        <div class="flex items-center gap-1.5 text-zinc-500">
+          <template v-if="autoSaveState === 'pending' || saving">
+            <i class="fa-solid fa-circle-notch fa-spin text-zinc-400 text-[11px]"></i>
+            <span class="hidden sm:inline text-zinc-500">正在自动保存…</span>
+          </template>
+          <template v-else-if="autoSaveState === 'saved'">
+            <i class="fa-solid fa-check text-emerald-600 text-[11px]"></i>
+            <span class="hidden sm:inline text-zinc-500">已自动保存</span>
+          </template>
+          <template v-else-if="autoSaveState === 'error'">
+            <i class="fa-solid fa-circle-exclamation text-rose-500 text-[11px]"></i>
+            <span class="hidden sm:inline text-rose-600">保存异常</span>
+          </template>
+        </div>
+
+        <div class="h-3.5 w-[1px] bg-zinc-200 hidden sm:block"></div>
+
+        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-200 bg-zinc-50/70 text-[11px] text-zinc-600">
+          <span class="h-1.5 w-1.5 rounded-full" :class="activeCount > 0 ? 'bg-emerald-500' : 'bg-zinc-300'"></span>
+          <span class="tabular-nums">{{ activeCount }}/3 渠道在线</span>
+        </div>
+
+        <button class="btn-outline !px-2.5 !py-1 !text-xs" @click="refreshAll" :disabled="refreshing" title="立即同步数据">
+          <i class="fa-solid fa-rotate-right text-[11px]" :class="refreshing ? 'fa-spin' : ''"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主内容区 -->
+  <main class="mx-auto w-full max-w-6xl flex-1 px-4 sm:px-6 py-6">
+
+    <!-- ==================== TAB 1: 任务看板 ==================== -->
+    <section v-show="activeTab === 'board'" class="space-y-6">
+
+      <!-- 顶部概览与操作栏 -->
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-6">
+          <div>
+            <div class="text-[11px] text-zinc-500">待执行日程</div>
+            <div class="text-xl font-semibold tabular-nums text-zinc-900 mt-0.5">{{ pendingSchedules.length }}</div>
+          </div>
+          <div class="h-7 w-[1px] bg-zinc-200"></div>
+          <div>
+            <div class="text-[11px] text-zinc-500">待交截止备忘 (DDL)</div>
+            <div class="text-xl font-semibold tabular-nums text-zinc-900 mt-0.5">{{ pendingDdls.length }}</div>
+          </div>
+          <div class="h-7 w-[1px] bg-zinc-200"></div>
+          <div>
+            <div class="text-[11px] text-zinc-500">24h 内紧急</div>
+            <div class="text-xl font-semibold tabular-nums mt-0.5" :class="urgent24.length ? 'text-rose-600' : 'text-zinc-900'">{{ urgent24.length }}</div>
+          </div>
+          <div class="h-7 w-[1px] bg-zinc-200 hidden sm:block"></div>
+          <div class="hidden sm:block">
+            <div class="text-[11px] text-zinc-500">已归档完成</div>
+            <div class="text-xl font-semibold tabular-nums text-zinc-400 mt-0.5">{{ completedTasks.length }}</div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button class="btn-outline" @click="openCreate('schedule')">
+            <i class="fa-regular fa-calendar-plus text-xs"></i> 新建日程
+          </button>
+          <button class="btn-dark" @click="openCreate('memo_ddl')">
+            <i class="fa-solid fa-plus text-xs"></i> 新建截止备忘 (DDL)
+          </button>
+        </div>
+      </div>
+
+      <!-- 双栏列表 -->
+      <div class="grid lg:grid-cols-2 gap-5">
+
+        <!-- 左栏：日程提醒 (Schedule) -->
+        <div class="panel flex flex-col">
+          <div class="px-4 py-3 border-b border-zinc-100 flex items-center justify-between">
+            <div>
+              <div class="flex items-center gap-2">
+                <i class="fa-regular fa-clock text-zinc-700 text-xs"></i>
+                <h2 class="text-xs font-semibold text-zinc-900 uppercase tracking-wider">日程提醒 (Schedule)</h2>
+              </div>
+              <p class="text-[11px] text-zinc-400 mt-0.5">约定在某个具体时刻去做的事（到点前预提醒 + 到点二次提醒，支持周期重复）</p>
+            </div>
+            <span class="text-xs font-mono text-zinc-500 bg-zinc-100 px-2 py-0.5 rounded">{{ pendingSchedules.length }}</span>
+          </div>
+
+          <div class="p-3 space-y-2 flex-1 max-h-[540px] overflow-y-auto thin-scroll">
+            <div v-if="!pendingSchedules.length" class="py-14 text-center">
+              <p class="text-xs text-zinc-400">暂无待办日程</p>
+              <p class="text-[11px] text-zinc-300 mt-1">可在微信或对话沙盒发送「30分钟后提醒我拿快递」</p>
+            </div>
+
+            <div v-for="task in pendingSchedules" :key="task.id"
+              class="group rounded-lg border border-zinc-200/80 bg-white p-3 hover:border-zinc-400 transition-colors">
+              <div class="flex items-start gap-3">
+                <button @click="completeTask(task)" title="标记为已完成"
+                  class="mt-0.5 h-4 w-4 shrink-0 rounded border border-zinc-300 grid place-items-center text-transparent hover:border-zinc-900 hover:text-zinc-900 transition">
+                  <i class="fa-solid fa-check text-[9px]"></i>
+                </button>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-start justify-between gap-2">
+                    <span class="text-sm font-medium text-zinc-900 break-words leading-snug">{{ task.title }}</span>
+                    <span v-if="task.rrule_str" class="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 text-zinc-600 font-medium">
+                      {{ rruleLabel(task.rrule_str) }}
+                    </span>
+                  </div>
+                  <p v-if="task.description" class="text-xs text-zinc-500 mt-1 break-words">{{ task.description }}</p>
+                  <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                    <div class="flex items-center gap-3 tabular-nums">
+                      <span class="text-zinc-600 font-medium">{{ fmtTime(task.start_time || task.deadline) }}</span>
+                      <span v-if="task.remind_advance_minutes && task.remind_advance_minutes.length">
+                        提前 {{ remindLabel(task.remind_advance_minutes) }}
+                      </span>
+                      <span>{{ channelLabel(task.sender_id === 'web-simulator' ? 'web-simulator' : task.source_channel) }}</span>
+                    </div>
+                    <div class="flex items-center gap-2 opacity-80 group-hover:opacity-100">
+                      <button class="text-zinc-500 hover:text-zinc-900" @click="openEdit(task)">编辑</button>
+                      <span class="text-zinc-200">|</span>
+                      <button class="text-zinc-400 hover:text-rose-600" @click="deleteTask(task)">删除</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右栏：截止备忘 (DDL Memo) -->
+        <div class="panel flex flex-col">
+          <div class="px-4 py-3 border-b border-zinc-100 flex items-center justify-between">
+            <div>
+              <div class="flex items-center gap-2">
+                <i class="fa-regular fa-flag text-zinc-700 text-xs"></i>
+                <h2 class="text-xs font-semibold text-zinc-900 uppercase tracking-wider">截止备忘 (DDL Memo)</h2>
+              </div>
+              <p class="text-[11px] text-zinc-400 mt-0.5">在截止线前必须完成的任务（倒计时追踪 + 提前1天/半天阶梯预警 + 欠账汇总）</p>
+            </div>
+            <span class="text-xs font-mono text-zinc-500 bg-zinc-100 px-2 py-0.5 rounded">{{ pendingDdls.length }}</span>
+          </div>
+
+          <div class="p-3 space-y-2 flex-1 max-h-[540px] overflow-y-auto thin-scroll">
+            <div v-if="!pendingDdls.length" class="py-14 text-center">
+              <p class="text-xs text-zinc-400">暂无未完成的截止备忘</p>
+              <p class="text-[11px] text-zinc-300 mt-1">可发送「半个小时后交作业截止」或「软工报告11月5日23:59截止」</p>
+            </div>
+
+            <div v-for="task in pendingDdls" :key="task.id"
+              class="group rounded-lg border border-zinc-200/80 bg-white p-3 hover:border-zinc-400 transition-colors">
+              <div class="flex items-start gap-3">
+                <button @click="completeTask(task)" title="标记为已完成"
+                  class="mt-0.5 h-4 w-4 shrink-0 rounded border border-zinc-300 grid place-items-center text-transparent hover:border-zinc-900 hover:text-zinc-900 transition">
+                  <i class="fa-solid fa-check text-[9px]"></i>
+                </button>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-start justify-between gap-2">
+                    <span class="text-sm font-medium text-zinc-900 break-words leading-snug">{{ task.title }}</span>
+                    <span class="shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium tabular-nums" :class="countdownInfo(task).tagClass">
+                      {{ countdownInfo(task).remainText }}
+                    </span>
+                  </div>
+                  <p v-if="task.description" class="text-xs text-zinc-500 mt-1 break-words">{{ task.description }}</p>
+
+                  <!-- 极简细线进度条 -->
+                  <div class="mt-2.5 h-1 w-full rounded-full bg-zinc-100 overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" :class="countdownInfo(task).barClass" :style="{ width: countdownInfo(task).percent + '%' }"></div>
+                  </div>
+
+                  <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                    <div class="flex items-center gap-3 tabular-nums">
+                      <span class="text-zinc-600">截止 {{ fmtTime(task.deadline || task.start_time) }}</span>
+                      <span>{{ channelLabel(task.sender_id === 'web-simulator' ? 'web-simulator' : task.source_channel) }}</span>
+                    </div>
+                    <div class="flex items-center gap-2 opacity-80 group-hover:opacity-100">
+                      <button class="text-zinc-500 hover:text-zinc-900" @click="openEdit(task)">编辑</button>
+                      <span class="text-zinc-200">|</span>
+                      <button class="text-zinc-400 hover:text-rose-600" @click="deleteTask(task)">删除</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部归档折叠面板 -->
+      <div class="panel overflow-hidden">
+        <button class="w-full px-4 py-2.5 flex items-center justify-between text-xs text-zinc-500 hover:bg-zinc-50 transition" @click="showArchive = !showArchive">
+          <span>已归档记录 ({{ doneTasks.length }})</span>
+          <i class="fa-solid text-[10px]" :class="showArchive ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+        </button>
+        <div v-show="showArchive" class="border-t border-zinc-100 divide-y divide-zinc-100 max-h-64 overflow-y-auto thin-scroll">
+          <div v-if="!doneTasks.length" class="py-6 text-center text-xs text-zinc-400">暂无归档任务</div>
+          <div v-for="task in doneTasks" :key="task.id" class="px-4 py-2 flex items-center justify-between gap-3 text-xs">
+            <span class="text-zinc-400 line-through truncate flex-1">{{ task.title }}</span>
+            <span class="text-[11px] text-zinc-400 tabular-nums">{{ fmtTime(task.updated_at) }}</span>
+            <button class="text-zinc-600 hover:text-zinc-900" @click="restoreTask(task)">恢复</button>
+            <button class="text-zinc-400 hover:text-rose-600" @click="deleteTask(task)">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 2: 对话沙盒 ==================== -->
+    <section v-show="activeTab === 'chat'" class="max-w-3xl mx-auto space-y-4">
+      <div class="panel overflow-hidden flex flex-col h-[580px]">
+        <div class="px-4 py-3 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50">
+          <div>
+            <h2 class="text-xs font-semibold text-zinc-900">本地对话测试沙盒</h2>
+            <p class="text-[11px] text-zinc-400">直接调用后端编排器测试建日程、DDL 与消息引用改期，创建的数据会实时出现在「任务看板」</p>
+          </div>
+          <button class="text-xs text-zinc-400 hover:text-zinc-700" @click="clearChat">清空会话</button>
+        </div>
+
+        <div ref="chatBox" class="flex-1 overflow-y-auto thin-scroll p-4 space-y-3 bg-[#FAFAFA]">
+          <div v-for="m in chat" :key="m.key" class="flex" :class="m.role === 'user' ? 'justify-end' : 'justify-start'">
+            <div class="max-w-[82%]">
+              <div v-if="m.quote" class="mb-1 px-2.5 py-1 rounded bg-zinc-200/70 text-[11px] text-zinc-600 truncate">
+                引用：{{ m.quote }}
+              </div>
+              <div class="px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap break-words"
+                :class="m.role === 'user' ? 'bg-zinc-900 text-white' : 'bg-white border border-zinc-200 text-zinc-800'">{{ m.text }}</div>
+              <div class="mt-1 flex items-center gap-3 text-[10px] text-zinc-400" :class="m.role === 'user' ? 'justify-end' : ''">
+                <span class="tabular-nums">{{ m.time }}</span>
+                <button v-if="m.role === 'bot' && m.msgId" class="text-zinc-600 hover:text-zinc-900 font-medium" @click="quoteMsg(m)">
+                  ↩ 引用此消息改期 / 销项
+                </button>
+              </div>
+            </div>
+          </div>
+          <div v-if="chatSending" class="text-xs text-zinc-400 px-2">正在处理…</div>
+        </div>
+
+        <div class="border-t border-zinc-200 bg-white p-3 space-y-2.5">
+          <div v-if="quote" class="flex items-center justify-between gap-2 px-3 py-1.5 rounded-md bg-zinc-100 text-xs text-zinc-700">
+            <span class="truncate">正在引用：{{ quote.text }}</span>
+            <button class="text-zinc-400 hover:text-zinc-900" @click="cancelQuote"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="flex items-center gap-2">
+            <input v-model="chatInput" @keyup.enter="sendChat" class="input-base flex-1" :disabled="chatSending"
+              placeholder="输入指令，如：半个小时后交作业截止 / 30分钟后提醒我拿快递 / 我还有什么事没做" />
+            <button class="btn-dark" @click="sendChat" :disabled="chatSending || !chatInput.trim()">发送</button>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <button v-for="q in quickReplies" :key="q.text" class="tag-pill !text-[11px]" @click="quickSend(q)">
+              {{ q.text }}<span v-if="q.needQuote" class="text-zinc-400"> (需先点引用)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- ==================== TAB 3: 模型与提醒偏好 ==================== -->
+    <section v-show="activeTab === 'llm'" class="max-w-3xl mx-auto space-y-5">
+
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-zinc-900">语言模型配置 (OpenAI 兼容接口)</h2>
+            <p class="text-xs text-zinc-500 mt-0.5">输入或切换预设后系统会自动保存并热生效，无需手动点击保存按钮</p>
+          </div>
+          <span class="text-[11px] text-zinc-500 bg-zinc-100 px-2 py-0.5 rounded">自动保存已启用</span>
+        </div>
+
+        <div class="flex flex-wrap gap-1.5">
+          <button v-for="p in llmPresets" :key="p.name" class="tag-pill"
+            :class="{ active: cfg.llm_base_url === p.base_url && cfg.llm_model === p.model }"
+            @click="applyPreset(p)">
+            {{ p.name }}
+          </button>
+        </div>
+
+        <div class="grid sm:grid-cols-2 gap-3.5">
+          <div class="sm:col-span-2">
+            <label class="block text-xs font-medium text-zinc-700 mb-1">接口地址 (Base URL)</label>
+            <input v-model.trim="cfg.llm_base_url" class="input-base font-mono text-xs" placeholder="https://open.bigmodel.cn/api/paas/v4/" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">API Key</label>
+            <div class="relative">
+              <input v-model.trim="cfg.llm_api_key" :type="showKey ? 'text' : 'password'" class="input-base font-mono text-xs pr-8" placeholder="输入密钥后自动保存…" autocomplete="off" />
+              <button class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700 text-xs" @click="showKey = !showKey" tabindex="-1">
+                <i class="fa-regular" :class="showKey ? 'fa-eye-slash' : 'fa-eye'"></i>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">模型名称 (Model)</label>
+            <input v-model.trim="cfg.llm_model" class="input-base font-mono text-xs" placeholder="glm-4-flash" />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 pt-1">
+          <button class="btn-outline" @click="testLlm" :disabled="testingLlm">
+            <i class="fa-solid fa-plug text-[11px]"></i>
+            {{ testingLlm ? '正在验证连接…' : '验证模型连通性' }}
+          </button>
+          <span v-if="llmResult" class="text-xs flex items-center gap-1.5" :class="llmResult.ok ? 'text-emerald-600' : 'text-rose-600'">
+            <i :class="llmResult.ok ? 'fa-solid fa-check' : 'fa-solid fa-xmark'"></i>
+            <span>{{ llmResult.message }}</span>
+            <span v-if="llmResult.ok" class="text-zinc-400 font-mono">({{ llmResult.latency_ms }} ms)</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="panel p-5 space-y-5">
+        <div>
+          <h2 class="text-sm font-semibold text-zinc-900">默认提醒时间策略</h2>
+          <p class="text-xs text-zinc-500 mt-0.5">当你在说话时未特别指定“提前多久提醒”时，系统默认按以下节点推送消息</p>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-xs font-medium text-zinc-700">日程提醒 (Schedule) 默认提前量</label>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button v-for="opt in scheduleMinuteOptions" :key="opt.v" class="tag-pill"
+              :class="{ active: hasMinute('default_schedule_remind_minutes', opt.v) }"
+              @click="toggleMinute('default_schedule_remind_minutes', opt.v)">{{ opt.label }}</button>
+            <div class="inline-flex items-center gap-1 ml-1">
+              <input v-model.trim="customSchedule" @keyup.enter="addCustomMinute('default_schedule_remind_minutes', 'customSchedule')"
+                class="input-base !w-24 !py-1 !text-xs" placeholder="自定义分钟" />
+              <button class="btn-outline !py-1 !px-2 !text-xs" @click="addCustomMinute('default_schedule_remind_minutes', 'customSchedule')">添加</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-xs font-medium text-zinc-700">截止备忘 (DDL Memo) 默认阶梯预警</label>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button v-for="opt in ddlMinuteOptions" :key="opt.v" class="tag-pill"
+              :class="{ active: hasMinute('default_ddl_advances', opt.v) }"
+              @click="toggleMinute('default_ddl_advances', opt.v)">{{ opt.label }}</button>
+            <div class="inline-flex items-center gap-1 ml-1">
+              <input v-model.trim="customDdl" @keyup.enter="addCustomMinute('default_ddl_advances', 'customDdl')"
+                class="input-base !w-24 !py-1 !text-xs" placeholder="自定义分钟" />
+              <button class="btn-outline !py-1 !px-2 !text-xs" @click="addCustomMinute('default_ddl_advances', 'customDdl')">添加</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-zinc-100 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <label class="text-xs font-medium text-zinc-600">系统时区</label>
+            <input v-model.trim="cfg.timezone" class="input-base !w-40 !py-1 font-mono text-xs" placeholder="Asia/Shanghai" />
+          </div>
+          <span class="text-[11px] text-zinc-400">所有修改均实时自动同步至数据库</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 4: 机器人渠道 ==================== -->
+    <section v-show="activeTab === 'channels'" class="max-w-3xl mx-auto space-y-4">
+
+      <!-- 微信 OpenClaw -->
+      <div class="panel p-5 flex flex-wrap items-center justify-between gap-4">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <h2 class="text-sm font-semibold text-zinc-900">微信 OpenClaw (ClawBot 官方 iLink 通道)</h2>
+            <span class="text-[11px] px-2 py-0.5 rounded font-medium"
+              :class="channelStatus.wechat_claw ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-zinc-100 text-zinc-500'">
+              {{ channelStatus.wechat_claw ? '已连接' : '未连接' }}
+            </span>
+          </div>
+          <p class="text-xs text-zinc-500">扫码授权后自动保存凭证并维持长轮询连接，支持直接引用微信消息改期</p>
+        </div>
+        <button class="btn-dark" @click="openWechatQr">
+          <i class="fa-solid fa-qrcode text-xs"></i> {{ channelStatus.wechat_claw ? '重新扫码绑定' : '微信扫码绑定' }}
+        </button>
+      </div>
+
+      <!-- 钉钉 Stream -->
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-semibold text-zinc-900">钉钉机器人 (Stream 模式)</h2>
+              <span class="text-[11px] px-2 py-0.5 rounded font-medium"
+                :class="channelStatus.dingtalk ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-zinc-100 text-zinc-500'">
+                {{ channelStatus.dingtalk ? '已连接' : '未连接' }}
+              </span>
+            </div>
+            <p class="text-xs text-zinc-500 mt-0.5">WebSocket 长连接模式，无需公网 IP 或 Webhook 域名</p>
+          </div>
+          <button class="relative h-5 w-9 rounded-full transition-colors" :class="cfg.dingtalk_enabled ? 'bg-zinc-900' : 'bg-zinc-200'"
+            @click="cfg.dingtalk_enabled = !cfg.dingtalk_enabled">
+            <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="cfg.dingtalk_enabled ? 'left-[18px]' : 'left-0.5'"></span>
+          </button>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3.5">
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Client ID (AppKey)</label>
+            <input v-model.trim="cfg.dingtalk_client_id" class="input-base font-mono text-xs" placeholder="dingxxxxxxxxxxxx" autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Client Secret (AppSecret)</label>
+            <input v-model.trim="cfg.dingtalk_client_secret" type="password" class="input-base font-mono text-xs" placeholder="••••••••" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Telegram -->
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-semibold text-zinc-900">Telegram 机器人</h2>
+              <span class="text-[11px] px-2 py-0.5 rounded font-medium"
+                :class="channelStatus.telegram ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-zinc-100 text-zinc-500'">
+                {{ channelStatus.telegram ? '已连接' : '未连接' }}
+              </span>
+            </div>
+            <p class="text-xs text-zinc-500 mt-0.5">getUpdates 异步长轮询，支持配置本地 HTTP 代理</p>
+          </div>
+          <button class="relative h-5 w-9 rounded-full transition-colors" :class="cfg.telegram_enabled ? 'bg-zinc-900' : 'bg-zinc-200'"
+            @click="cfg.telegram_enabled = !cfg.telegram_enabled">
+            <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="cfg.telegram_enabled ? 'left-[18px]' : 'left-0.5'"></span>
+          </button>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3.5">
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Bot Token</label>
+            <input v-model.trim="cfg.telegram_bot_token" type="password" class="input-base font-mono text-xs" placeholder="123456:ABC-DEF..." autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Proxy URL (可选)</label>
+            <input v-model.trim="cfg.telegram_proxy_url" class="input-base font-mono text-xs" placeholder="http://127.0.0.1:7890" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 5: 跨端日历同步 ==================== -->
+    <section v-show="activeTab === 'calendar'" class="max-w-3xl mx-auto space-y-4">
+
+      <!-- ICS 订阅 -->
+      <div class="panel p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-zinc-900">手机系统日历免密订阅 (ICS)</h2>
+            <p class="text-xs text-zinc-500 mt-0.5">在 iPhone / Android 系统日历中添加此订阅链接，即可将所有待办日程与 DDL 同步至手机锁屏提醒</p>
+          </div>
+          <span class="text-[11px] text-zinc-500 bg-zinc-100 px-2 py-0.5 rounded">免账号配置</span>
+        </div>
+        <div class="grid sm:grid-cols-[1fr_auto] gap-4 items-center">
+          <div class="space-y-2">
+            <div class="flex gap-2">
+              <input :value="icsFeedUrl" readonly class="input-base font-mono text-xs bg-zinc-50" />
+              <button class="btn-outline shrink-0" @click="copyIcs" :disabled="!icsFeedUrl">复制链接</button>
+            </div>
+            <p class="text-[11px] text-zinc-400">iOS 路径：设置 → 日历 → 账户 → 添加账户 → 其他 → 添加已订阅的日历</p>
+          </div>
+          <div ref="icsQrBox" class="h-28 w-28 rounded-lg border border-zinc-200 bg-white p-2 grid place-items-center mx-auto"></div>
+        </div>
+      </div>
+
+      <!-- CalDAV / iCloud -->
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-zinc-900">Apple iCloud / CalDAV 双向同步</h2>
+            <p class="text-xs text-zinc-500 mt-0.5">创建或引用改期时直接写入远端 CalDAV 日历（iCloud 需使用 Apple 应用专用密码）</p>
+          </div>
+          <button class="relative h-5 w-9 rounded-full transition-colors" :class="cfg.caldav_enabled ? 'bg-zinc-900' : 'bg-zinc-200'"
+            @click="cfg.caldav_enabled = !cfg.caldav_enabled">
+            <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="cfg.caldav_enabled ? 'left-[18px]' : 'left-0.5'"></span>
+          </button>
+        </div>
+        <div class="grid sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">CalDAV 地址</label>
+            <input v-model.trim="cfg.caldav_url" class="input-base font-mono text-xs" placeholder="https://caldav.icloud.com" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">账号 (Apple ID)</label>
+            <input v-model.trim="cfg.caldav_username" class="input-base text-xs" placeholder="you@icloud.com" autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">应用专用密码</label>
+            <input v-model.trim="cfg.caldav_password" type="password" class="input-base font-mono text-xs" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" />
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="btn-outline" @click="testCalendar('caldav')" :disabled="calTesting.caldav">
+            {{ calTesting.caldav ? '测试中…' : '测试 CalDAV 连接' }}
+          </button>
+          <span v-if="calResult.caldav" class="text-xs" :class="calResult.caldav.ok ? 'text-emerald-600' : 'text-rose-600'">
+            {{ calResult.caldav.message }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Google Calendar -->
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-zinc-900">Google Calendar</h2>
+            <p class="text-xs text-zinc-500 mt-0.5">通过 OAuth2 Refresh Token 同步至 Google 日历</p>
+          </div>
+          <button class="relative h-5 w-9 rounded-full transition-colors" :class="cfg.google_calendar_enabled ? 'bg-zinc-900' : 'bg-zinc-200'"
+            @click="cfg.google_calendar_enabled = !cfg.google_calendar_enabled">
+            <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="cfg.google_calendar_enabled ? 'left-[18px]' : 'left-0.5'"></span>
+          </button>
+        </div>
+        <div class="grid sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Client ID</label>
+            <input v-model.trim="cfg.google_client_id" class="input-base font-mono text-xs" placeholder="xxx.apps.googleusercontent.com" autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Client Secret</label>
+            <input v-model.trim="cfg.google_client_secret" type="password" class="input-base font-mono text-xs" placeholder="GOCSPX-..." autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">Refresh Token</label>
+            <input v-model.trim="cfg.google_refresh_token" type="password" class="input-base font-mono text-xs" placeholder="1//0g..." autocomplete="off" />
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="btn-outline" @click="testCalendar('google')" :disabled="calTesting.google">
+            {{ calTesting.google ? '测试中…' : '测试 Google 日历连接' }}
+          </button>
+          <span v-if="calResult.google" class="text-xs" :class="calResult.google.ok ? 'text-emerald-600' : 'text-rose-600'">
+            {{ calResult.google.message }}
+          </span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 新建 / 编辑任务弹窗 -->
+  <div v-if="showTaskModal" class="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] p-4 flex items-center justify-center" @click.self="closeTaskModal">
+    <div class="w-full max-w-md panel overflow-hidden">
+      <div class="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-zinc-900">
+          {{ taskModalMode === 'edit' ? '编辑任务' : (taskForm.task_type === 'memo_ddl' ? '新建截止备忘 (DDL)' : '新建日程提醒') }}
+        </h3>
+        <button class="text-zinc-400 hover:text-zinc-700" @click="closeTaskModal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div v-if="taskModalMode === 'create'" class="grid grid-cols-2 gap-1 p-1 rounded-lg bg-zinc-100 text-xs">
+          <button class="py-1.5 rounded-md font-medium transition"
+            :class="taskForm.task_type === 'schedule' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'"
+            @click="taskForm.task_type = 'schedule'">日程提醒 (某刻去做)</button>
+          <button class="py-1.5 rounded-md font-medium transition"
+            :class="taskForm.task_type === 'memo_ddl' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'"
+            @click="taskForm.task_type = 'memo_ddl'">截止备忘 (DDL)</button>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-700 mb-1">事项名称</label>
+          <input v-model="taskForm.title" class="input-base" :placeholder="taskForm.task_type === 'memo_ddl' ? '如：交软件工程作业' : '如：去菜鸟驿站拿快递'" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-700 mb-1">{{ taskForm.task_type === 'memo_ddl' ? '截止时间 (Deadline)' : '执行时间' }}</label>
+          <input v-model="taskForm.when" type="datetime-local" class="input-base tabular-nums" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-700 mb-1">备注说明 (可选)</label>
+          <textarea v-model="taskForm.description" rows="2" class="input-base resize-none"></textarea>
+        </div>
+        <div v-if="taskForm.task_type === 'schedule'">
+          <label class="block text-xs font-medium text-zinc-700 mb-1">重复周期</label>
+          <select v-model="taskForm.rrule_str" class="input-base">
+            <option value="">单次不重复</option>
+            <option value="FREQ=DAILY">每天重复</option>
+            <option value="FREQ=WEEKLY">每周重复</option>
+            <option value="FREQ=MONTHLY">每月重复</option>
+            <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">每个工作日</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-700 mb-1.5">提前提醒节点 (不选则沿用全局默认)</label>
+          <div class="flex flex-wrap gap-1.5">
+            <button v-for="opt in remindOptions" :key="opt.v" class="tag-pill"
+              :class="{ active: taskForm.remind.includes(opt.v) }" @click="toggleFormRemind(opt.v)">{{ opt.label }}</button>
+          </div>
+        </div>
+      </div>
+      <div class="px-5 py-3 border-t border-zinc-100 bg-zinc-50/50 flex justify-end gap-2">
+        <button class="btn-outline" @click="closeTaskModal">取消</button>
+        <button class="btn-dark" @click="submitTask" :disabled="submittingTask">{{ submittingTask ? '保存中…' : '确认保存' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 微信扫码弹窗 -->
+  <div v-if="showQr" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px] p-4 flex items-center justify-center" @click.self="closeQr">
+    <div class="w-full max-w-xs panel p-5 text-center space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-xs font-semibold text-zinc-900">微信扫码连接 ClawBot</h3>
+        <button class="text-zinc-400 hover:text-zinc-700" @click="closeQr"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="mx-auto h-52 w-52 rounded-lg border border-zinc-200 bg-white grid place-items-center p-2 overflow-hidden">
+        <span v-if="qrStatus === 'loading'" class="text-xs text-zinc-400">正在获取二维码…</span>
+        <span v-else-if="qrStatus === 'error'" class="text-xs text-rose-600 px-2">{{ qrMsg || '二维码获取失败' }}</span>
+        <img v-else-if="qrImage" :src="qrImage" class="h-full w-full object-contain" />
+        <div v-else ref="qrBox" class="grid place-items-center"></div>
+      </div>
+      <p class="text-xs text-zinc-500">
+        <template v-if="qrStatus === 'waiting'">请使用手机微信扫描二维码</template>
+        <template v-else-if="qrStatus === 'scanned'">已扫码，请在手机端确认授权</template>
+        <template v-else-if="qrStatus === 'confirmed'"><span class="text-emerald-600 font-medium">已确认连接，正在启用…</span></template>
+        <template v-else-if="qrStatus === 'expired'"><span class="text-amber-600">二维码已过期，请点击刷新</span></template>
+      </p>
+      <div class="flex justify-center gap-2">
+        <button class="btn-outline !text-xs" @click="openWechatQr">刷新二维码</button>
+        <button class="btn-dark !text-xs" @click="closeQr">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 极简底部轻提示 -->
+  <div v-if="toast.show" class="fixed bottom-5 right-5 z-50">
+    <div class="px-3.5 py-2 rounded-lg shadow-md border text-xs font-medium flex items-center gap-2"
+      :class="toast.type === 'error' ? 'bg-rose-600 text-white border-rose-700' : 'bg-zinc-900 text-white border-zinc-800'">
+      <span>{{ toast.message }}</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_CFG = {
+  llm_base_url: 'https://open.bigmodel.cn/api/paas/v4/',
+  llm_api_key: '',
+  llm_model: 'glm-4-flash',
+  default_schedule_remind_minutes: [10, 0],
+  default_ddl_advances: [1440, 720],
+  dingtalk_enabled: false,
+  dingtalk_client_id: '',
+  dingtalk_client_secret: '',
+  telegram_enabled: false,
+  telegram_bot_token: '',
+  telegram_proxy_url: '',
+  wechat_claw_enabled: false,
+  wechat_claw_token: '',
+  caldav_enabled: false,
+  caldav_url: 'https://caldav.icloud.com',
+  caldav_username: '',
+  caldav_password: '',
+  google_calendar_enabled: false,
+  google_client_id: '',
+  google_client_secret: '',
+  google_refresh_token: '',
+  timezone: 'Asia/Shanghai'
+};
+
+const LLM_PRESETS = [
+  { name: '智谱 GLM-4-Flash (免费)', base_url: 'https://open.bigmodel.cn/api/paas/v4/', model: 'glm-4-flash' },
+  { name: 'DeepSeek-V3', base_url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { name: '硅基流动 Qwen2.5-7B', base_url: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-7B-Instruct' },
+  { name: '本地 Ollama', base_url: 'http://localhost:11434/v1', model: 'qwen2.5:7b' }
+];
+
+const TAB_LIST = [
+  { key: 'board', icon: 'fa-regular fa-calendar', label: '任务看板' },
+  { key: 'chat', icon: 'fa-regular fa-comment-dots', label: '对话沙盒' },
+  { key: 'llm', icon: 'fa-solid fa-sliders', label: '模型与提醒' },
+  { key: 'channels', icon: 'fa-solid fa-link', label: '接入渠道' },
+  { key: 'calendar', icon: 'fa-regular fa-calendar-check', label: '日历同步' }
+];
+
+Vue.createApp({
+  data() {
+    return {
+      tabs: TAB_LIST,
+      activeTab: 'board',
+      refreshing: false,
+      saving: false,
+      submittingTask: false,
+      configReady: false,
+      autoSaveTimer: null,
+      autoSaveState: 'saved', // 'saved' | 'pending' | 'error'
+      lastSavedSnapshot: '',
+
+      cfg: { ...DEFAULT_CFG },
+      channelStatus: { wechat_claw: false, dingtalk: false, telegram: false },
+      icsFeedUrl: '',
+      tasks: [],
+      showArchive: false,
+      nowTs: Date.now(),
+
+      showTaskModal: false,
+      taskModalMode: 'create',
+      taskForm: { id: null, task_type: 'schedule', title: '', description: '', when: '', rrule_str: '', remind: [] },
+
+      chat: [],
+      chatInput: '',
+      chatSending: false,
+      quote: null,
+      chatSeq: 0,
+      quickReplies: [
+        { text: '我还有什么事没做', needQuote: false },
+        { text: '半个小时后交作业截止', needQuote: false },
+        { text: '30分钟后提醒我拿快递', needQuote: false },
+        { text: '推迟半小时', needQuote: true },
+        { text: '已完成', needQuote: true }
+      ],
+
+      showKey: false,
+      testingLlm: false,
+      llmResult: null,
+      llmPresets: LLM_PRESETS,
+      customSchedule: '',
+      customDdl: '',
+      scheduleMinuteOptions: [
+        { v: 0, label: '准点 (0m)' },
+        { v: 5, label: '提前 5m' },
+        { v: 10, label: '提前 10m' },
+        { v: 30, label: '提前 30m' },
+        { v: 60, label: '提前 1h' }
+      ],
+      ddlMinuteOptions: [
+        { v: 1440, label: '提前 1 天' },
+        { v: 720, label: '提前半天 (12h)' },
+        { v: 240, label: '提前 4h' },
+        { v: 120, label: '提前 2h' },
+        { v: 60, label: '提前 1h' },
+        { v: 30, label: '提前 30m' }
+      ],
+      remindOptions: [
+        { v: 0, label: '准点' },
+        { v: 10, label: '10分钟前' },
+        { v: 30, label: '30分钟前' },
+        { v: 60, label: '1小时前' },
+        { v: 720, label: '半天前' },
+        { v: 1440, label: '1天前' }
+      ],
+
+      showQr: false,
+      qrStatus: 'loading',
+      qrMsg: '',
+      qrImage: '',
+      qrPollTimer: null,
+      qrId: '',
+
+      calTesting: { caldav: false, google: false },
+      calResult: { caldav: null, google: null },
+
+      toast: { show: false, message: '', type: 'info' },
+      toastTimer: null,
+      tickTimer: null,
+      pollTimer: null
+    };
+  },
+
+  computed: {
+    activeCount() {
+      return Object.values(this.channelStatus || {}).filter(Boolean).length;
+    },
+    pendingTasks() {
+      return this.tasks.filter(t => t.status === 'pending');
+    },
+    pendingSchedules() {
+      return this.pendingTasks.filter(t => (t.task_type || 'schedule') !== 'memo_ddl');
+    },
+    pendingDdls() {
+      return this.pendingTasks.filter(t => t.task_type === 'memo_ddl');
+    },
+    completedTasks() {
+      return this.tasks.filter(t => t.status === 'completed');
+    },
+    doneTasks() {
+      return this.tasks.filter(t => t.status === 'completed' || t.status === 'cancelled');
+    },
+    urgent24() {
+      const now = this.nowTs;
+      return this.pendingTasks.filter(t => {
+        const raw = t.deadline || t.start_time;
+        if (!raw) return false;
+        const diff = new Date(raw).getTime() - now;
+        return !isNaN(diff) && diff <= 86400000;
+      });
+    }
+  },
+
+  watch: {
+    cfg: {
+      deep: true,
+      handler() {
+        if (!this.configReady) return;
+        const currentSnap = this.serializeCfg();
+        if (currentSnap === this.lastSavedSnapshot) return;
+        this.autoSaveState = 'pending';
+        if (this.autoSaveTimer) clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = setTimeout(() => {
+          this.saveConfigSilent();
+        }, 700);
+      }
+    }
+  },
+
+  methods: {
+    serializeCfg() {
+      return JSON.stringify({
+        ...this.cfg,
+        default_schedule_remind_minutes: (this.cfg.default_schedule_remind_minutes || []).map(Number),
+        default_ddl_advances: (this.cfg.default_ddl_advances || []).map(Number)
+      });
+    },
+
+    async switchTab(key) {
+      this.activeTab = key;
+      this.nowTs = Date.now();
+      if (key === 'board') {
+        await this.loadTasks();
+      } else if (key === 'calendar') {
+        this.$nextTick(() => this.renderIcsQr());
+      } else if (key === 'channels') {
+        await this.loadConfig();
+      }
+    },
+
+    async api(path, options) {
+      const opts = Object.assign({ headers: {} }, options || {});
+      if (opts.body && typeof opts.body !== 'string') {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(opts.body);
+      }
+      const resp = await fetch(path, opts);
+      let data = null;
+      try { data = await resp.json(); } catch (e) { data = null; }
+      if (!resp.ok) {
+        const detail = data && (data.detail || data.message) ? (data.detail || data.message) : `HTTP ${resp.status}`;
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+      return data || {};
+    },
+
+    notify(message, type = 'info') {
+      this.toast = { show: true, message: String(message), type };
+      if (this.toastTimer) clearTimeout(this.toastTimer);
+      this.toastTimer = setTimeout(() => { this.toast.show = false; }, 2600);
+    },
+
+    parseDate(v) {
+      if (!v) return null;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? null : d;
+    },
+    fmtTime(v) {
+      const d = this.parseDate(v);
+      if (!d) return '未设置';
+      const p = n => String(n).padStart(2, '0');
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    toLocalInput(v) {
+      const d = this.parseDate(v);
+      if (!d) return '';
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    nowLocalInput(offsetMin) {
+      const d = new Date(Date.now() + (offsetMin || 0) * 60000);
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    humanDuration(ms) {
+      const totalMin = Math.max(0, Math.floor(ms / 60000));
+      const days = Math.floor(totalMin / 1440);
+      const hours = Math.floor((totalMin % 1440) / 60);
+      const mins = totalMin % 60;
+      if (days > 0) return `${days}天${hours}小时`;
+      if (hours > 0) return `${hours}小时${mins}分`;
+      return `${mins}分钟`;
+    },
+    countdownInfo(task) {
+      const d = this.parseDate(task.deadline || task.start_time);
+      if (!d) return { remainText: '无截止时间', tagClass: 'bg-zinc-100 text-zinc-500', barClass: 'bg-zinc-300', percent: 0 };
+      const diff = d.getTime() - this.nowTs;
+      const abs = Math.abs(diff);
+      const hours = abs / 3600000;
+      if (diff < 0) {
+        return { remainText: `已逾期 ${this.humanDuration(abs)}`, tagClass: 'bg-rose-50 text-rose-600 border border-rose-200', barClass: 'bg-rose-500', percent: 100 };
+      }
+      if (hours <= 24) {
+        return { remainText: `剩 ${this.humanDuration(abs)}`, tagClass: 'bg-rose-50 text-rose-600 border border-rose-200', barClass: 'bg-rose-500', percent: Math.max(65, Math.round(100 - (hours / 24) * 35)) };
+      }
+      if (hours <= 72) {
+        return { remainText: `剩 ${this.humanDuration(abs)}`, tagClass: 'bg-amber-50 text-amber-700 border border-amber-200', barClass: 'bg-amber-500', percent: 45 };
+      }
+      return { remainText: `剩 ${this.humanDuration(abs)}`, tagClass: 'bg-zinc-100 text-zinc-600', barClass: 'bg-zinc-700', percent: 20 };
+    },
+    rruleLabel(rrule) {
+      const map = { 'FREQ=DAILY': '每天', 'FREQ=WEEKLY': '每周', 'FREQ=MONTHLY': '每月', 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR': '工作日' };
+      return map[rrule] || '周期重复';
+    },
+    channelLabel(ch) {
+      const map = { wechat_claw: '微信', dingtalk: '钉钉', telegram: 'Telegram', web: '网页', 'web-simulator': '沙盒' };
+      return map[ch] || ch || '网页';
+    },
+    remindLabel(mins) {
+      if (!mins || !mins.length) return '';
+      return mins.map(m => Number(m) === 0 ? '准点' : (m % 1440 === 0 ? `${m/1440}天` : (m % 60 === 0 ? `${m/60}h` : `${m}m`))).join('/');
+    },
+
+    async loadConfig() {
+      try {
+        const data = await this.api('/api/config');
+        this.configReady = false;
+        const incoming = (data && data.config) ? data.config : {};
+        this.cfg = Object.assign({}, DEFAULT_CFG, incoming);
+        this.cfg.default_schedule_remind_minutes = Array.isArray(this.cfg.default_schedule_remind_minutes)
+          ? this.cfg.default_schedule_remind_minutes.map(Number) : [];
+        this.cfg.default_ddl_advances = Array.isArray(this.cfg.default_ddl_advances)
+          ? this.cfg.default_ddl_advances.map(Number) : [];
+        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
+        this.icsFeedUrl = data.ics_feed_url || '';
+        this.lastSavedSnapshot = this.serializeCfg();
+        this.$nextTick(() => {
+          this.configReady = true;
+          this.renderIcsQr();
+        });
+      } catch (e) {
+        this.notify('读取配置失败：' + e.message, 'error');
+      }
+    },
+
+    async loadTasks() {
+      try {
+        const data = await this.api('/api/tasks');
+        this.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+        this.nowTs = Date.now();
+      } catch (e) {
+        /* 后台轮询静默容错 */
+      }
+    },
+
+    async refreshAll() {
+      this.refreshing = true;
+      try {
+        await Promise.all([this.loadConfig(), this.loadTasks()]);
+      } finally {
+        this.refreshing = false;
+      }
+    },
+
+    async saveConfigSilent() {
+      if (this.saving) return;
+      this.saving = true;
+      this.autoSaveState = 'pending';
+      try {
+        const payload = Object.assign({}, this.cfg, {
+          default_schedule_remind_minutes: (this.cfg.default_schedule_remind_minutes || []).map(Number),
+          default_ddl_advances: (this.cfg.default_ddl_advances || []).map(Number),
+          dingtalk_enabled: !!this.cfg.dingtalk_enabled,
+          telegram_enabled: !!this.cfg.telegram_enabled,
+          caldav_enabled: !!this.cfg.caldav_enabled,
+          google_calendar_enabled: !!this.cfg.google_calendar_enabled
+        });
+        const data = await this.api('/api/config', { method: 'PUT', body: { config: payload } });
+        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
+        this.icsFeedUrl = data.ics_feed_url || this.icsFeedUrl;
+        this.lastSavedSnapshot = this.serializeCfg();
+        this.autoSaveState = 'saved';
+      } catch (e) {
+        this.autoSaveState = 'error';
+        this.notify('自动保存失败：' + e.message, 'error');
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    applyPreset(preset) {
+      this.cfg.llm_base_url = preset.base_url;
+      this.cfg.llm_model = preset.model;
+      this.llmResult = null;
+    },
+    async testLlm() {
+      this.testingLlm = true;
+      this.llmResult = null;
+      try {
+        const data = await this.api('/api/llm/test', {
+          method: 'POST',
+          body: { base_url: this.cfg.llm_base_url, api_key: this.cfg.llm_api_key, model: this.cfg.llm_model }
+        });
+        this.llmResult = { ok: !!data.ok, message: data.message || (data.ok ? '连接成功' : '连接失败'), latency_ms: data.latency_ms || 0 };
+        if (data.ok) {
+          this.lastSavedSnapshot = this.serializeCfg();
+          this.autoSaveState = 'saved';
+        }
+      } catch (e) {
+        this.llmResult = { ok: false, message: e.message, latency_ms: 0 };
+      } finally {
+        this.testingLlm = false;
+      }
+    },
+
+    hasMinute(key, val) {
+      const arr = this.cfg[key];
+      return Array.isArray(arr) && arr.map(Number).includes(Number(val));
+    },
+    toggleMinute(key, val) {
+      const arr = Array.isArray(this.cfg[key]) ? this.cfg[key].map(Number) : [];
+      const idx = arr.indexOf(Number(val));
+      if (idx >= 0) arr.splice(idx, 1);
+      else arr.push(Number(val));
+      arr.sort((a, b) => b - a);
+      this.cfg[key] = arr;
+    },
+    addCustomMinute(key, field) {
+      const num = parseInt(String(this[field] || '').trim(), 10);
+      if (isNaN(num) || num < 0) return;
+      if (!this.hasMinute(key, num)) this.toggleMinute(key, num);
+      this[field] = '';
+    },
+
+    openCreate(type) {
+      this.taskModalMode = 'create';
+      this.taskForm = {
+        id: null,
+        task_type: type || 'schedule',
+        title: '',
+        description: '',
+        when: this.nowLocalInput(type === 'memo_ddl' ? 1440 : 30),
+        rrule_str: '',
+        remind: []
+      };
+      this.showTaskModal = true;
+    },
+    openEdit(task) {
+      this.taskModalMode = 'edit';
+      this.taskForm = {
+        id: task.id,
+        task_type: task.task_type === 'memo_ddl' ? 'memo_ddl' : 'schedule',
+        title: task.title || '',
+        description: task.description || '',
+        when: this.toLocalInput(task.start_time || task.deadline),
+        rrule_str: task.rrule_str || '',
+        remind: Array.isArray(task.remind_advance_minutes) ? task.remind_advance_minutes.map(Number) : []
+      };
+      this.showTaskModal = true;
+    },
+    closeTaskModal() {
+      this.showTaskModal = false;
+    },
+    toggleFormRemind(val) {
+      const arr = this.taskForm.remind;
+      const idx = arr.indexOf(Number(val));
+      if (idx >= 0) arr.splice(idx, 1);
+      else arr.push(Number(val));
+      arr.sort((a, b) => b - a);
+    },
+    async submitTask() {
+      if (this.submittingTask) return;
+      const f = this.taskForm;
+      if (!(f.title || '').trim() || !f.when) {
+        this.notify('请填写事项名称与时间', 'error');
+        return;
+      }
+      const iso = f.when.length === 16 ? f.when + ':00' : f.when;
+      const payload = {
+        title: f.title.trim(),
+        description: (f.description || '').trim() || null,
+        remind_advance_minutes: f.remind.map(Number)
+      };
+      if (f.task_type === 'memo_ddl') {
+        Object.assign(payload, { task_type: 'memo_ddl', deadline: iso, start_time: null, end_time: null, rrule_str: null });
+      } else {
+        Object.assign(payload, { task_type: 'schedule', start_time: iso, deadline: null, rrule_str: f.rrule_str || null });
+      }
+      this.submittingTask = true;
+      try {
+        if (this.taskModalMode === 'edit' && f.id) {
+          await this.api('/api/tasks/' + f.id, { method: 'PATCH', body: payload });
+        } else {
+          await this.api('/api/tasks', { method: 'POST', body: payload });
+        }
+        this.showTaskModal = false;
+        await this.loadTasks();
+        this.notify('已保存');
+      } catch (e) {
+        this.notify(e.message, 'error');
+      } finally {
+        this.submittingTask = false;
+      }
+    },
+    async completeTask(task) {
+      await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'completed' } });
+      await this.loadTasks();
+      this.notify('已标记完成');
+    },
+    async restoreTask(task) {
+      await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'pending' } });
+      await this.loadTasks();
+    },
+    async deleteTask(task) {
+      await this.api('/api/tasks/' + task.id, { method: 'DELETE' });
+      await this.loadTasks();
+      this.notify('已删除');
+    },
+
+    addChat(role, text, msgId, quoteText) {
+      this.chatSeq += 1;
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      this.chat.push({
+        key: 'm' + this.chatSeq,
+        role,
+        text: String(text || ''),
+        msgId: msgId || null,
+        quote: quoteText || '',
+        time: `${p(d.getHours())}:${p(d.getMinutes())}`
+      });
+      this.$nextTick(() => {
+        const box = this.$refs.chatBox;
+        if (box) box.scrollTop = box.scrollHeight;
+      });
+    },
+    async sendChat() {
+      const text = (this.chatInput || '').trim();
+      if (!text || this.chatSending) return;
+      const quoted = this.quote;
+      this.chatInput = '';
+      this.quote = null;
+      this.addChat('user', text, null, quoted ? quoted.text : '');
+      this.chatSending = true;
+      try {
+        const data = await this.api('/api/chat/simulate', {
+          method: 'POST',
+          body: { text, reply_to_msg_id: quoted ? quoted.msgId : null }
+        });
+        this.addChat('bot', data.reply || '', data.message_id || null, '');
+        // 发送完成后立即同步刷新任务看板数据，切回看板无需手动按 F5
+        await this.loadTasks();
+      } catch (e) {
+        this.addChat('bot', '处理失败：' + e.message, null, '');
+      } finally {
+        this.chatSending = false;
+      }
+    },
+    quickSend(q) {
+      if (q.needQuote && !this.quote) {
+        this.notify('请先点击机器人回复下方的「↩ 引用此消息改期 / 销项」', 'error');
+        return;
+      }
+      this.chatInput = q.text;
+      this.sendChat();
+    },
+    quoteMsg(m) {
+      if (!m.msgId) return;
+      this.quote = { msgId: m.msgId, text: m.text.length > 50 ? m.text.slice(0, 50) + '…' : m.text };
+    },
+    cancelQuote() { this.quote = null; },
+    clearChat() { this.chat = []; this.quote = null; },
+
+    stopQrPolling() {
+      if (this.qrPollTimer) { clearInterval(this.qrPollTimer); this.qrPollTimer = null; }
+    },
+    renderQrImage(res) {
+      const box = this.$refs.qrBox;
+      if (!box || !res || !res.qrcode_url) return;
+      box.innerHTML = '';
+      new QRCode(box, { text: res.qrcode_url, width: 184, height: 184, colorDark: '#09090B', colorLight: '#ffffff' });
+    },
+    async openWechatQr() {
+      this.showQr = true;
+      this.qrStatus = 'loading';
+      this.qrImage = '';
+      this.qrId = '';
+      this.stopQrPolling();
+      try {
+        const res = await this.api('/api/wechat/qrcode');
+        if (!res.ok) { this.qrStatus = 'error'; this.qrMsg = res.message; return; }
+        this.qrId = res.qrcode_id || '';
+        this.qrImage = res.qrcode_image || '';
+        this.qrStatus = 'waiting';
+        this.$nextTick(() => this.renderQrImage(res));
+        this.qrPollTimer = setInterval(async () => {
+          try {
+            const s = await this.api('/api/wechat/qrcode/status?qrcode_id=' + encodeURIComponent(this.qrId));
+            if (s.status) this.qrStatus = s.status;
+            if (s.status === 'confirmed') {
+              this.stopQrPolling();
+              await this.loadConfig();
+              setTimeout(() => { this.showQr = false; }, 1000);
+            } else if (s.status === 'expired') {
+              this.stopQrPolling();
+            }
+          } catch (e) {}
+        }, 2000);
+      } catch (e) {
+        this.qrStatus = 'error';
+        this.qrMsg = e.message;
+      }
+    },
+    closeQr() { this.stopQrPolling(); this.showQr = false; },
+
+    async testCalendar(provider) {
+      this.calTesting[provider] = true;
+      this.calResult[provider] = null;
+      const conf = provider === 'caldav'
+        ? { caldav_url: this.cfg.caldav_url, caldav_username: this.cfg.caldav_username, caldav_password: this.cfg.caldav_password }
+        : { google_client_id: this.cfg.google_client_id, google_client_secret: this.cfg.google_client_secret, google_refresh_token: this.cfg.google_refresh_token };
+      try {
+        const data = await this.api('/api/calendar/test', { method: 'POST', body: { provider, config: conf } });
+        this.calResult[provider] = { ok: !!data.ok, message: data.message };
+      } catch (e) {
+        this.calResult[provider] = { ok: false, message: e.message };
+      } finally {
+        this.calTesting[provider] = false;
+      }
+    },
+    renderIcsQr() {
+      const box = this.$refs.icsQrBox;
+      if (!box || !this.icsFeedUrl || !window.QRCode) return;
+      box.innerHTML = '';
+      new QRCode(box, { text: this.icsFeedUrl, width: 96, height: 96, colorDark: '#09090B', colorLight: '#ffffff' });
+    },
+    async copyIcs() {
+      if (!this.icsFeedUrl) return;
+      try {
+        await navigator.clipboard.writeText(this.icsFeedUrl);
+        this.notify('订阅链接已复制');
+      } catch (e) {
+        this.notify('请手动复制链接');
+      }
+    }
+  },
+
+  mounted() {
+    this.addChat('bot', '你好，我是 Chrono 个人日程与备忘助手。\n你可以直接发送：\n• 「30分钟后提醒我拿快递」（日程提醒）\n• 「半个小时后交作业截止」（截止备忘 DDL）\n• 「我还有什么事情没做」（未完成盘点）', null, '');
+    this.refreshAll();
+
+    // 每 5 秒静默同步一次看板任务（微信/钉钉新消息入库后无需按 F5 即可实时展现）
+    this.pollTimer = setInterval(() => {
+      if (this.activeTab === 'board' && !this.showTaskModal) {
+        this.loadTasks();
+      }
+    }, 5000);
+    this.tickTimer = setInterval(() => { this.nowTs = Date.now(); }, 15000);
+
+    // 窗口重新获得焦点（如从微信切回浏览器）时立即刷新
+    window.addEventListener('focus', () => {
+      this.loadTasks();
+    });
+  },
+
+  beforeUnmount() {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.stopQrPolling();
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# ============================================================
+# Chrono Secretary —— 一键容器化启动
+#   构建并启动： docker compose up -d --build
+#   查看日志：   docker compose logs -f
+#   停止：       docker compose down
+# 数据持久化：./data 目录（SQLite 数据库 chrono.db 就存在这里）
+# 访问：http://localhost:8000/
+# ============================================================
+services:
+  chrono-secretary:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chrono-secretary:latest
+    container_name: chrono-secretary
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    volumes:
+      # 数据库 + 任何需要持久化的运行时文件
+      - ./data:/app/data
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).getcode()==200 else 1)"
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 25s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

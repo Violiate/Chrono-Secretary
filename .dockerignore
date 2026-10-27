@@ -1,0 +1,30 @@
+# 运行时数据（数据库不随镜像分发）
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 开发工具与版本库
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+logs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

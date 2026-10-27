@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- 运行时数据与隐私数据库（绝不进入版本库）----
+data/*
+!data/.gitkeep
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# ---- 密钥 / OAuth 凭证 / 本地环境变量 ----
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secret*.json
+*token*.json
+client_secret*.json
+
+# ---- 内部开发过程文档（仅保留本地，不上传公开仓库）----
+GPT.md
+DeepSeek.md
+01_项目立项规划书.md
+02_开源架构与Agent派工单.md
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
