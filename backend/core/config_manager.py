@@ -20,6 +20,7 @@ DEFAULT_CONFIGS: dict[str, Any] = {
     "wechat_claw_enabled": False, "wechat_claw_token": "",
     "wechat_claw_base_url": "https://ilinkai.weixin.qq.com",
     "dingtalk_enabled": False, "dingtalk_client_id": "", "dingtalk_client_secret": "",
+    "feishu_enabled": False, "feishu_app_id": "", "feishu_app_secret": "",
     "telegram_enabled": False, "telegram_bot_token": "", "telegram_proxy_url": "",
     "caldav_enabled": False, "caldav_url": "https://caldav.icloud.com",
     "caldav_username": "", "caldav_password": "", "caldav_calendar_name": "",

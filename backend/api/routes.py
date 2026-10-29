@@ -43,6 +43,7 @@ SECRET_CONFIG_KEYS = (
     "llm_api_key",
     "wechat_claw_token",
     "dingtalk_client_secret",
+    "feishu_app_secret",
     "telegram_bot_token",
     "caldav_password",
     "google_credentials_json",
@@ -85,6 +86,7 @@ async def verify_admin_auth(request: Request) -> None:
         path.endswith("/health")
         or path.endswith("/status")
         or path.endswith("/auth/login")
+        or path.endswith("/feishu/webhook")
         or ("/calendar/feed/" in path and path.endswith(".ics"))
     ):
         return
@@ -152,7 +154,7 @@ class TaskPayload(BaseModel):
 # 工具函数
 # --------------------------------------------------------------------------- #
 def _normalize_status_map(raw: Any) -> Dict[str, bool]:
-    result: Dict[str, bool] = {"wechat_claw": False, "dingtalk": False, "telegram": False}
+    result: Dict[str, bool] = {"wechat_claw": False, "dingtalk": False, "feishu": False, "telegram": False}
     if not isinstance(raw, dict):
         return result
     for key, value in raw.items():
@@ -716,6 +718,25 @@ async def calendar_feed(token: str) -> Response:
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# 飞书事件回调 Webhook（兼容长连接模式与 HTTP 回调模式）
+# --------------------------------------------------------------------------- #
+@router.post("/feishu/webhook")
+async def feishu_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """处理飞书开放平台 url_verification 握手与 im.message.receive_v1 消息事件。"""
+    if isinstance(payload, dict) and "challenge" in payload:
+        return {"challenge": payload["challenge"]}
+
+    adapter = channel_manager._adapters.get(ChannelType.FEISHU)
+    if adapter is None:
+        from backend.channels.feishu_bot import FeishuChannelAdapter
+        adapter = FeishuChannelAdapter(config_manager=config_manager, orchestrator=orchestrator)
+
+    if hasattr(adapter, "handle_webhook_event"):
+        asyncio.create_task(adapter.handle_webhook_event(payload))
+    return {"code": 0, "msg": "ok"}
 
 
 __all__ = ["router"]

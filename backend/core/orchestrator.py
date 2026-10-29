@@ -11,10 +11,11 @@ from zoneinfo import ZoneInfo
 from backend.core.config_manager import config_manager
 from backend.core.nlu_engine import nlu_engine
 from backend.core.repository import repo
-from backend.core.schemas import IntentType, UnifiedIncomingMessage
+from backend.core.schemas import ChannelType, IntentType, UnifiedIncomingMessage
 
 logger = logging.getLogger(__name__)
-HINT = "💡 你可以随时【引用】本条消息回复‘推迟半小时’、‘改到明天3点’或‘已完成’来动态调整。"
+HINT = "💡 你可以随时【引用】本条消息回复‘推迟半小时’、‘改到明天3点’或‘已完成’，或在任意渠道直接发送‘#编号 推迟半小时’来跨端调整。"
+_RECIPIENTS_KEY = "_scheduler_channel_recipients"
 
 
 class Orchestrator:
@@ -27,11 +28,40 @@ class Orchestrator:
         tz = ZoneInfo(config_manager.get("timezone", "Asia/Shanghai"))
         return value.replace(tzinfo=tz) if value.tzinfo is None else value.astimezone(tz)
 
+    async def _record_channel_recipient(self, channel_val: str, sender_id: str) -> dict[str, str]:
+        """记录用户在各 IM 渠道的活跃账号 ID，用于跨渠道同步卡片与跨端提醒投递。"""
+        all_cfgs = await repo.get_all_configs()
+        mapping = dict(all_cfgs.get(_RECIPIENTS_KEY) or {}) if isinstance(all_cfgs.get(_RECIPIENTS_KEY), dict) else {}
+        if sender_id and sender_id not in ("web-simulator", "default"):
+            if mapping.get(channel_val) != sender_id:
+                mapping[channel_val] = sender_id
+                await repo.update_configs({_RECIPIENTS_KEY: mapping})
+        return mapping
+
+    async def _find_task_by_target(self, target_str: str):
+        """支持免引用跨端操作：按 '#12' 编号或事项标题关键词查找待办任务。"""
+        raw = (target_str or "").strip(" ，。！？!?")
+        if not raw:
+            return None
+        if raw.startswith("#") and raw[1:].isdigit():
+            return await repo.get_task(int(raw[1:]))
+        if raw.isdigit():
+            return await repo.get_task(int(raw))
+        pending = await repo.list_tasks(status="pending")
+        for t in pending:
+            if t.title == raw:
+                return t
+        for t in pending:
+            if raw in (t.title or "") or (t.title or "") in raw:
+                return t
+        return None
+
     async def handle_message(self, msg: UnifiedIncomingMessage) -> Optional[str]:
         key = (msg.channel.value, msg.sender_id, msg.message_id)
         async with self._lock:
             if msg.context_token:
                 await repo.save_context_token(msg.channel.value, msg.sender_id, msg.context_token)
+            recipients_map = await self._record_channel_recipient(msg.channel.value, msg.sender_id)
             if msg.message_id and key in self._seen:
                 return self._seen[key]
             try:
@@ -48,6 +78,19 @@ class Orchestrator:
                     msg.channel, msg.sender_id, text, context_token=msg.context_token)
                 if sent_id and task is not None:
                     await repo.bind_message_to_task(msg.channel.value, str(sent_id), task.id)
+                # 跨渠道自动同步卡片：若为真实 IM 渠道产生/更新的任务，同步推送至其他已连接的 IM 渠道并绑定引用 ID
+                if task is not None and msg.sender_id not in ("web-simulator", "default"):
+                    for other_ch_val, other_recipient in recipients_map.items():
+                        if other_ch_val == msg.channel.value or not other_recipient:
+                            continue
+                        try:
+                            other_ch = ChannelType(other_ch_val)
+                            sync_text = f"🔄 [跨端同步]\n{text}"
+                            other_msg_id = await channel_manager.send_message(other_ch, other_recipient, sync_text)
+                            if other_msg_id:
+                                await repo.bind_message_to_task(other_ch.value, str(other_msg_id), task.id)
+                        except Exception:
+                            logger.debug("跨端同步推送忽略 (%s)", other_ch_val)
             except Exception:
                 logger.exception("回复发送或引用绑定失败 message=%s", msg.message_id)
             if msg.message_id:
@@ -65,12 +108,15 @@ class Orchestrator:
             task = await repo.get_task_by_msg_id(msg.channel.value, msg.reply_to_msg_id)
             if task is None:
                 return "未找到这条引用对应的任务，请引用机器人发出的任务确认或提醒消息。", None
-            # 平台消息ID可能可猜测，必须同时验证任务归属。
-            if task.sender_id != msg.sender_id or task.source_channel != msg.channel.value:
-                return "这条引用不属于你的当前渠道任务。", None
         result = await nlu_engine.parse(msg.text, has_reply=task is not None)
         if result.intent == IntentType.QUERY_PENDING:
             return await self._pending(msg), None
+        # 免引用跨端匹配：当未引用消息但表达了修改/完成/取消意图且带有 #编号 或 事项名称 时，在全局待办池中查找目标任务
+        if task is None and result.intent in (IntentType.MODIFY_TASK, IntentType.COMPLETE_TASK, IntentType.CANCEL_TASK) and result.title:
+            task = await self._find_task_by_target(result.title)
+            if task is None:
+                return f"未找到匹配的待办事项「{result.title}」，你可以先发送‘我还有什么事没做’查看任务 #编号。", None
+            result.title = None
         if task is not None:
             if result.intent in (IntentType.COMPLETE_TASK, IntentType.CANCEL_TASK):
                 status = "completed" if result.intent == IntentType.COMPLETE_TASK else "cancelled"
@@ -173,10 +219,8 @@ class Orchestrator:
             rrulestr(value("rrule_str"), dtstart=self._local(start or value("deadline")))
 
     async def _pending(self, msg) -> str:
-        tasks = await repo.get_pending_tasks_sorted(msg.sender_id)
-        # 仓库按sender过滤；再隔离不同平台同名/同数字账户。
-        tasks = [t for t in tasks if (t.sender_id == msg.sender_id and t.source_channel == msg.channel.value)
-                 or (t.sender_id == "default" and t.source_channel == "web")]
+        # 个人秘书全渠道共享待办池（微信/飞书/钉钉/Telegram/网页互通）
+        tasks = await repo.list_tasks(status="pending")
         if not tasks:
             return "🎉 当前没有未完成事项。"
         now = datetime.now(ZoneInfo(config_manager.get("timezone", "Asia/Shanghai")))
@@ -186,17 +230,18 @@ class Orchestrator:
         for task in tasks:
             when = task.deadline or task.start_time
             if when is None:
-                groups[2].append(f"• {task.title}（尚未设置时间）")
+                groups[2].append(f"• [#{task.id}] {task.title}（尚未设置时间）")
                 continue
             when = self._local(when)
             hours = (when - now).total_seconds() / 3600
             remaining = f"逾期 {-hours:.1f} 小时" if hours < 0 else (
                 f"剩余 {hours:.1f} 小时" if hours < 72 else f"剩余 {hours / 24:.1f} 天")
             index = 0 if hours <= 24 else (1 if hours <= 72 else 2)
-            groups[index].append(f"• {task.title} — {when:%m-%d %H:%M}（{remaining}）")
+            groups[index].append(f"• [#{task.id}] {task.title} — {when:%m-%d %H:%M}（{remaining}）")
         headings = ("🔴 24小时内紧急事项（含逾期）", "🟡 3天内事项", "🟢 远期备忘与日程")
-        return "📋 未完成事项\n\n" + "\n\n".join(
+        body = "📋 未完成事项\n\n" + "\n\n".join(
             heading + "\n" + "\n".join(items) for heading, items in zip(headings, groups) if items)
+        return f"{body}\n\n💡 跨端提示：直接发送“#编号 推迟半小时”或“把事项名已完成”即可免引用修改。"
 
 
 orchestrator = Orchestrator()

@@ -4,14 +4,14 @@
   <img src="https://img.shields.io/badge/Python-3.11%2B-18181B?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/FastAPI-Async-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Frontend-Vue_3_%2B_Tailwind-18181B?style=flat-square&logo=vuedotjs&logoColor=4FC08D" alt="Vue 3" />
-  <img src="https://img.shields.io/badge/IM-WeChat_OpenClaw_%7C_DingTalk_%7C_Telegram-07C160?style=flat-square&logo=wechat&logoColor=white" alt="IM Channels" />
+  <img src="https://img.shields.io/badge/IM-WeChat_%7C_DingTalk_%7C_Telegram_%7C_Feishu-07C160?style=flat-square&logo=wechat&logoColor=white" alt="IM Channels" />
   <img src="https://img.shields.io/badge/Calendar-iCloud_CalDAV_%7C_Google_%7C_ICS-2563EB?style=flat-square&logo=apple&logoColor=white" alt="Calendars" />
   <img src="https://img.shields.io/badge/License-MIT-zinc?style=flat-square" alt="MIT License" />
 </p>
 
 > **“IM 即入口，日历即视图，对话即操作，闭环即秘书。”**
 >
-> **Chrono Secretary** 是一款轻量级、支持自托管（Self-Hosted）的开源 AI 个人日程与截止日期（DDL）管理秘书。通过接入 **微信（OpenClaw 官方 iLink 通道）/ 钉钉 / Telegram** 机器人发起自然对话，自动将事项同步至 **Apple iCloud 日历 / Google Calendar / 手机本地系统日历 (`.ics`)**，并在临近节点通过 IM 机器人主动发起**二次提醒**，支持直接**【引用回复】**机器人消息进行动态改期、顺延或销项。
+> **Chrono Secretary** 是一款轻量级、支持自托管（Self-Hosted）的开源 AI 个人日程与截止日期（DDL）管理秘书。通过接入 **微信（OpenClaw 官方 iLink 通道）/ 钉钉 / Telegram / 飞书** 机器人发起自然对话，自动将事项同步至 **Apple iCloud 日历 / Google Calendar / 手机本地系统日历 (`.ics`)**，并在临近节点通过 IM 机器人主动发起**二次提醒**，支持直接**【引用回复】**机器人消息进行动态改期、顺延或销项。
 
 ---
 
@@ -37,7 +37,7 @@
 | **欠账盘点汇报** | 归入常规今日/未来日程 | 询问 `“我还有什么事情没做”` 时，按 **🔥 24h 内极紧急 / ⚠️ 3天内临近 / 📌 远期规划** 分级汇报剩余时长 |
 
 ### 2. ↩️ 消息引用动态改期（Method A: Quote Reply · 0 模型成本）
-当机器人发出「创建确认卡片」或「到点提醒消息」后，直接在微信/钉钉/Telegram 中**【引用/回复】**该条消息：
+当机器人发出「创建确认卡片」或「到点提醒消息」后，直接在微信/钉钉/Telegram/飞书中**【引用/回复】**该条消息：
 - **相对顺延**：回复 `“推迟半小时”`、`“延后2小时”`、`“推迟15分钟”` $\rightarrow$ 自动重算时间并同步更新远端日历与定时任务。
 - **绝对改期**：回复 `“改到明天下午3点”`、`“改到周五10:00”` $\rightarrow$ 自动迁移日程节点。
 - **一键销项**：回复 `“已完成”`、`“做好了”`、`“1”`、`“取消”` $\rightarrow$ 自动标记完成、移除后续提醒并清理日历事件。
@@ -47,10 +47,11 @@
 - **L1 本地高频句式与时间引擎**：内置中文相对时间（*“半个小时后”*、*“3天后”*）、绝对日期与周期规则提取，断网或未配 API Key 也能稳定工作。
 - **L2 轻量 LLM 槽位提取**：复杂口语自动调用 OpenAI 兼容接口（默认推荐官方永久免费的 **智谱 `GLM-4-Flash`**，同样支持 **DeepSeek / 通义千问 Qwen / 本地 Ollama**）。
 
-### 4. 📱 三端 IM 机器人 + 三端日历全覆盖（免公网 IP）
+### 4. 📱 多端 IM 机器人 + 三端日历全覆盖（免公网 IP）
 - **微信官方 OpenClaw (`ClawBot`)**：基于腾讯 iLink Bot API (`ilinkai.weixin.qq.com`)，支持在 Web 后台直接生成二维码扫码绑定 + HTTP 长轮询收发，无需公网域名。
 - **钉钉机器人 (`Stream` 模式)**：基于 WebSocket 长连接双向收发，内网穿透零配置。
 - **Telegram 机器人 (`Long Polling`)**：基于 `getUpdates` 异步长轮询，支持原生 `reply_to_message` 引用检测。
+- **飞书机器人 (`WebSocket` 长连接 / Webhook)**：支持企业自建应用，基于免公网 IP 长连接双向收发与 `parent_id` 引用改期。
 - **全平台日历同步**：
   - **Apple iCloud / 通用 CalDAV**：支持 iCloud、Nextcloud、群晖 Calendar、飞书 CalDAV 双向读写删改。
   - **Google Calendar**：支持标准 Google Calendar API v3 事件同步。
@@ -68,10 +69,11 @@
 
 ```mermaid
 flowchart TB
-    subgraph Channels["💬 IM 交互接入层 (免公网 IP 长轮询 / Stream)"]
+    subgraph Channels["💬 IM 交互接入层 (免公网 IP 长轮询 / Stream / WebSocket)"]
         WX["微信 OpenClaw (iLink API)"]
         DT["钉钉机器人 (Stream WebSocket)"]
         TG["Telegram Bot (getUpdates)"]
+        FS["飞书机器人 (WebSocket 长连接)"]
         WEB["Web 内置对话沙盒"]
     end
 
@@ -90,13 +92,13 @@ flowchart TB
         ICS["手机本地日历 .ics 订阅流"]
     end
 
-    WX & DT & TG & WEB <--> ORCH
+    WX & DT & TG & FS & WEB <--> ORCH
     ORCH --> NLU
     ORCH <--> DB
     ORCH <--> SCHED
     ORCH --> CAL
     CAL --> ICLOUD & GCAL & ICS
-    CM -. "热重载通知" .-> ORCH & NLU & WX & DT & TG & CAL
+    CM -. "热重载通知" .-> ORCH & NLU & WX & DT & TG & FS & CAL
 ```
 
 ---
@@ -120,10 +122,11 @@ chrono-secretary/
 │   │   ├── orchestrator.py          # 核心业务编排器：处理日程创建、DDL 拆解、引用改期闭环与未完成事项分级盘点
 │   │   └── scheduler.py             # APScheduler 异步调度器：负责准点提醒、DDL 阶梯预警与 RRULE 周期自动续期
 │   ├── channels/
-│   │   ├── manager.py               # 多渠道网关管理器：统一启停微信/钉钉/Telegram 适配器与热重载重连
+│   │   ├── manager.py               # 多渠道网关管理器：统一启停微信/钉钉/Telegram/飞书 适配器与热重载重连
 │   │   ├── wechat_claw.py           # 微信 OpenClaw (腾讯 iLink API) 适配器：扫码登录、getupdates 长轮询、引用解析
 │   │   ├── dingtalk_bot.py          # 钉钉机器人适配器：Stream 模式长连接、repliedMsgId 引用提取与主动推送
-│   │   └── telegram_bot.py          # Telegram 机器人适配器：getUpdates 异步轮询、reply_to_message 引用识别
+│   │   ├── telegram_bot.py          # Telegram 机器人适配器：getUpdates 异步轮询、reply_to_message 引用识别
+│   │   └── feishu_bot.py            # 飞书机器人适配器：WebSocket 免公网长连接、Protobuf 编解码与 parent_id 引用解析
 │   └── calendars/
 │       ├── manager.py               # 跨平台日历同步管理器：并发分发事件创建、改期与删除指令
 │       ├── caldav_provider.py       # Apple iCloud / 通用 CalDAV 双向同步器 (支持 VALARM 提醒与 RRULE)
@@ -181,9 +184,10 @@ docker compose up -d --build
 3. 点击右上角 **「测试连接」**，显示绿色延迟毫秒数即代表配置成功。
    *(注：即使不填 API Key，内置的 L0/L1 本地时间引擎依然可以独立解析常规日程、DDL 与引用改期)*
 
-### 2. 接入聊天机器人（三选一或多开）
-- **微信 OpenClaw (`ClawBot`)**：在 **「IM 机器人通道」** 中开启微信开关 $\rightarrow$ 点击 **「生成微信绑定二维码」** $\rightarrow$ 使用手机微信扫码确认，即可自动写入长效 `bot_token` 并启动长轮询。
+### 2. 接入聊天机器人（四选一或多开）
+- **微信 OpenClaw (`ClawBot`)**：在 **「接入渠道」** 中开启微信开关 $\rightarrow$ 点击 **「微信扫码绑定」** $\rightarrow$ 使用手机微信扫码确认，即可自动写入长效 `bot_token` 并启动长轮询。
 - **钉钉机器人**：在钉钉开放平台创建企业内部机器人并开启 **Stream 模式**，将 `Client ID (AppKey)` 与 `Client Secret` 填入对应输入框即可。
+- **飞书机器人**：在飞书开放平台创建企业自建应用，添加「机器人」能力并在「事件与回调」中开启 **「使用长连接接收事件」**（添加 `im.message.receive_v1` 事件），将 `App ID` 与 `App Secret` 填入对应输入框即可。
 - **Telegram Bot**：向 `@BotFather` 申请 `Bot Token` 填入即可自动建立轮询。
 
 ### 3. 绑定个人日历

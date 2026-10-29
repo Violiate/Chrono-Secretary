@@ -223,6 +223,50 @@ class NLUEngine:
             return NLUResult(intent=IntentType.QUERY_PENDING)
 
         if not has_reply:
+            # L1-0: 免引用跨端操作（按 #ID 或 事项名称 推迟/改期/完成/取消，0 Token）
+            # 示例: "#12 推迟半小时" / "把拿快递推迟半小时" / "#12 已完成" / "完成 #12" / "拿快递已完成" / "取消拿快递"
+            m_id_done = re.fullmatch(r"(?:把)?\s*#?(?P<tid>\d+)\s*(?:号任务)?\s*(?:已完成|完成了?|搞定了?|做好了?|已做|做完了?)", compact) or re.fullmatch(
+                r"(?:已完成|完成了?|搞定了?)\s*#?(?P<tid>\d+)", compact
+            )
+            if m_id_done:
+                return NLUResult(intent=IntentType.COMPLETE_TASK, title=f"#{m_id_done.group('tid')}")
+
+            m_id_cancel = re.fullmatch(r"(?:把)?\s*#?(?P<tid>\d+)\s*(?:号任务)?\s*(?:取消了?|删除|算了|不做了)", compact) or re.fullmatch(
+                r"(?:取消|删除)\s*#?(?P<tid>\d+)", compact
+            )
+            if m_id_cancel:
+                return NLUResult(intent=IntentType.CANCEL_TASK, title=f"#{m_id_cancel.group('tid')}")
+
+            m_named_snooze = re.fullmatch(
+                rf"(?:把|将)?\s*(?P<target>#\d+|.+?)\s*(?:推迟|延后|推后)\s*{_DURATION}(?:吧|后)?(?:再提醒(?:我)?)?",
+                text.strip(" ，。！？!?"),
+            )
+            if m_named_snooze:
+                try:
+                    t_name = m_named_snooze.group("target").strip()
+                    if t_name:
+                        return NLUResult(intent=IntentType.MODIFY_TASK, title=t_name, snooze_minutes=_minutes(m_named_snooze))
+                except ValueError:
+                    pass
+
+            m_named_resched = re.match(
+                r"^(?:把|将)?\s*(?P<target>#\d+|.+?)\s*(?:改到|改为|调整到|推到|推迟到|延后到|换到)\s*(?P<time_expr>.+?)(?:吧|再提醒(?:我)?)?$",
+                text.strip(" ，。！？!?"),
+            )
+            if m_named_resched:
+                dt = _parse_cn_datetime(m_named_resched.group("time_expr"), now)
+                t_name = m_named_resched.group("target").strip()
+                if dt is not None and t_name:
+                    return NLUResult(intent=IntentType.MODIFY_TASK, title=t_name, start_time=dt, deadline=dt)
+
+            m_named_done = re.fullmatch(r"(?:把|将)?\s*(?P<target>.+?)\s*(?:设为|标记为)?(?:已完成|做完了|搞定了|做好了)", text.strip(" ，。！？!?"))
+            if m_named_done and len(m_named_done.group("target").strip()) >= 2:
+                return NLUResult(intent=IntentType.COMPLETE_TASK, title=m_named_done.group("target").strip())
+
+            m_named_cancel = re.fullmatch(r"(?:取消|删除)(?:任务|日程|备忘)?\s*(?P<target>#\d+|.+)", text.strip(" ，。！？!?"))
+            if m_named_cancel and len(m_named_cancel.group("target").strip()) >= 2:
+                return NLUResult(intent=IntentType.CANCEL_TASK, title=m_named_cancel.group("target").strip())
+
             # L1-A: DDL 备忘录句式（支持“事项+时间+截止”与“时间+事项+截止”两种语序）
             body_text, adv_mins = _extract_advance_minutes(text)
             m_ddl_tail = re.match(
@@ -341,7 +385,7 @@ class NLUEngine:
                         payload[dt_field] = cn_dt
 
             result = NLUResult(**payload)
-            if not has_reply and result.intent in {IntentType.MODIFY_TASK, IntentType.COMPLETE_TASK, IntentType.CANCEL_TASK}:
+            if not has_reply and not result.title and result.intent in {IntentType.MODIFY_TASK, IntentType.COMPLETE_TASK, IntentType.CANCEL_TASK}:
                 return NLUResult(intent=IntentType.UNKNOWN)
             return result
         except Exception as exc:

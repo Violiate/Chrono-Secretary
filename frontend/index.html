@@ -123,7 +123,7 @@
 
         <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-200 bg-zinc-50/70 text-[11px] text-zinc-600">
           <span class="h-1.5 w-1.5 rounded-full" :class="activeCount > 0 ? 'bg-emerald-500' : 'bg-zinc-300'"></span>
-          <span class="tabular-nums">{{ activeCount }}/3 渠道在线</span>
+          <span class="tabular-nums">{{ activeCount }}/4 渠道在线</span>
         </div>
 
         <button class="btn-outline !px-2.5 !py-1 !text-xs" @click="refreshAll" :disabled="refreshing" title="立即同步数据">
@@ -504,6 +504,36 @@
         </div>
       </div>
 
+      <!-- 飞书 Feishu -->
+      <div class="panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-semibold text-zinc-900">飞书机器人 (长连接模式)</h2>
+              <span class="text-[11px] px-2 py-0.5 rounded font-medium"
+                :class="channelStatus.feishu ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-zinc-100 text-zinc-500'">
+                {{ channelStatus.feishu ? '已连接' : '未连接' }}
+              </span>
+            </div>
+            <p class="text-xs text-zinc-500 mt-0.5">支持飞书开放平台「使用长连接接收事件（免公网 IP）」与引用消息改期</p>
+          </div>
+          <button class="relative h-5 w-9 rounded-full transition-colors" :class="cfg.feishu_enabled ? 'bg-zinc-900' : 'bg-zinc-200'"
+            @click="cfg.feishu_enabled = !cfg.feishu_enabled">
+            <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="cfg.feishu_enabled ? 'left-[18px]' : 'left-0.5'"></span>
+          </button>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3.5">
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">App ID</label>
+            <input v-model.trim="cfg.feishu_app_id" class="input-base font-mono text-xs" placeholder="cli_xxxxxxxxxxxxxxxx" autocomplete="off" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-zinc-700 mb-1">App Secret</label>
+            <input v-model.trim="cfg.feishu_app_secret" type="password" class="input-base font-mono text-xs" placeholder="••••••••" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+
       <!-- Telegram -->
       <div class="panel p-5 space-y-4">
         <div class="flex items-center justify-between">
@@ -747,6 +777,9 @@ const DEFAULT_CFG = {
   dingtalk_enabled: false,
   dingtalk_client_id: '',
   dingtalk_client_secret: '',
+  feishu_enabled: false,
+  feishu_app_id: '',
+  feishu_app_secret: '',
   telegram_enabled: false,
   telegram_bot_token: '',
   telegram_proxy_url: '',
@@ -793,7 +826,7 @@ Vue.createApp({
       lastSavedSnapshot: '',
 
       cfg: { ...DEFAULT_CFG },
-      channelStatus: { wechat_claw: false, dingtalk: false, telegram: false },
+      channelStatus: { wechat_claw: false, dingtalk: false, feishu: false, telegram: false },
       icsFeedUrl: '',
       tasks: [],
       showArchive: false,
@@ -1031,7 +1064,7 @@ Vue.createApp({
       return map[rrule] || '周期重复';
     },
     channelLabel(ch) {
-      const map = { wechat_claw: '微信', dingtalk: '钉钉', telegram: 'Telegram', web: '网页', 'web-simulator': '沙盒' };
+      const map = { wechat_claw: '微信', dingtalk: '钉钉', feishu: '飞书', telegram: 'Telegram', web: '网页', 'web-simulator': '沙盒' };
       return map[ch] || ch || '网页';
     },
     remindLabel(mins) {
@@ -1049,7 +1082,7 @@ Vue.createApp({
           ? this.cfg.default_schedule_remind_minutes.map(Number) : [];
         this.cfg.default_ddl_advances = Array.isArray(this.cfg.default_ddl_advances)
           ? this.cfg.default_ddl_advances.map(Number) : [];
-        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
+        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, feishu: false, telegram: false }, data.channel_status || {});
         let feedUrl = data.ics_feed_url || '';
         const token = data.ics_feed_token || incoming.ics_feed_token || '';
         if (token && window.location && window.location.origin && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(feedUrl)) {
@@ -1094,6 +1127,7 @@ Vue.createApp({
           default_schedule_remind_minutes: (this.cfg.default_schedule_remind_minutes || []).map(Number),
           default_ddl_advances: (this.cfg.default_ddl_advances || []).map(Number),
           dingtalk_enabled: !!this.cfg.dingtalk_enabled,
+          feishu_enabled: !!this.cfg.feishu_enabled,
           telegram_enabled: !!this.cfg.telegram_enabled,
           caldav_enabled: !!this.cfg.caldav_enabled,
           google_calendar_enabled: !!this.cfg.google_calendar_enabled
@@ -1103,7 +1137,7 @@ Vue.createApp({
           this.adminPassword = payload.admin_password;
           localStorage.setItem('chrono_admin_password', payload.admin_password);
         }
-        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
+        this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, feishu: false, telegram: false }, data.channel_status || {});
         this.lastSavedSnapshot = this.serializeCfg();
         this.autoSaveState = 'saved';
       } catch (e) {

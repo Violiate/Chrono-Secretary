@@ -12,6 +12,7 @@ from backend.core.repository import repo
 from backend.core.config_manager import config_manager
 from backend.core.scheduler import scheduler_manager
 from backend.channels.wechat_claw import WeChatClawAdapter
+from backend.channels.feishu_bot import FeishuChannelAdapter, encode_feishu_frame, decode_feishu_frame
 from backend.calendars.caldav_provider import CalDAVProvider
 from backend.calendars.google_provider import GoogleCalendarProvider
 
@@ -114,12 +115,15 @@ def run_all_tests() -> None:
         msg_id_1_final = q_resched["message_id"]
         print("✅ [6/10] 引用回复（Quote Reply）绝对时间改期（改到明天下午3点）正常")
 
-        # 7. 询问“我还有什么事情没做”按截止紧急度分级汇报
+        # 7. 询问“我还有什么事情没做”按截止紧急度分级汇报 + 跨渠道免引用按名称/编号直接改期
         q_pending = client.post("/api/chat/simulate", json={"text": "我还有什么事情没做"}).json()
         assert q_pending["ok"] and "📋 未完成事项" in q_pending["reply"]
         assert "软件工程作业" in q_pending["reply"] and "交报销单" in q_pending["reply"]
         assert q_pending["message_id"] is None
-        print("✅ [7/10] 未完成事项按截止时间紧急度分级盘点汇报正常")
+
+        q_cross = client.post("/api/chat/simulate", json={"text": "把软件工程作业推迟半小时"}).json()
+        assert q_cross["ok"] and "📅 已更新：软件工程作业" in q_cross["reply"]
+        print("✅ [7/10] 未完成事项分级盘点与跨渠道免引用改期（按事项名/#编号）正常")
 
         # 8. 引用回复标记完成与取消清理
         for mid in (msg_id_1_final, msg_id_2, msg_id_ddl1, msg_id_ddl2):
@@ -163,7 +167,27 @@ def run_all_tests() -> None:
     }
     assert WeChatClawAdapter._text(wx_payload) == "已完成"
     assert WeChatClawAdapter._reply_id(wx_payload) == "m099"
-    print("✅ [10/10] 微信 OpenClaw (iLink) 引用结构解析与跨端日历协议校验通过")
+
+    # 飞书 WebSocket 帧编解码与引用回复 (parent_id) 解析验证
+    raw_frame = encode_feishu_frame(101, 202, 1, 1, {"type": "event"}, b'{"ok":true}')
+    decoded_frame = decode_feishu_frame(raw_frame)
+    assert decoded_frame["seq_id"] == 101 and decoded_frame["headers"]["type"] == "event"
+    feishu_event = {
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_type": "user", "sender_id": {"open_id": "ou_test_user"}},
+            "message": {
+                "message_id": "om_msg_200",
+                "parent_id": "om_msg_100",
+                "chat_type": "p2p",
+                "chat_id": "oc_chat_1",
+                "content": '{"text": "@_user_1 推迟半小时"}',
+            },
+        },
+    }
+    parsed_fs = FeishuChannelAdapter.parse_event_message(feishu_event)
+    assert parsed_fs is not None and parsed_fs.text == "推迟半小时" and parsed_fs.reply_to_msg_id == "om_msg_100"
+    print("✅ [10/10] 微信 OpenClaw / 飞书长连接引用结构解析与跨端日历协议校验通过")
 
     print("=" * 64)
     print("🎉 全部 10 项核心验收测试 100% 通过！")

@@ -34,6 +34,9 @@ class ChannelManager:
         if channel == ChannelType.DINGTALK:
             from backend.channels.dingtalk_bot import DingTalkChannelAdapter
             return DingTalkChannelAdapter(config_manager=self.config_manager, orchestrator=handler)
+        if channel == ChannelType.FEISHU:
+            from backend.channels.feishu_bot import FeishuChannelAdapter
+            return FeishuChannelAdapter(config_manager=self.config_manager, orchestrator=handler)
         from backend.channels.telegram_bot import TelegramChannelAdapter
         return TelegramChannelAdapter(config_manager=self.config_manager, orchestrator=handler)
 

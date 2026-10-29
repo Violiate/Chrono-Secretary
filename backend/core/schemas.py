@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class ChannelType(str, Enum):
     WECHAT_CLAW = "wechat_claw"
     DINGTALK = "dingtalk"
+    FEISHU = "feishu"
     TELEGRAM = "telegram"
 
 
