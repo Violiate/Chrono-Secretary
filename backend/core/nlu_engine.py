@@ -339,19 +339,24 @@ class NLUEngine:
             "6. 每天/每周等周期转为 RFC5545 RRULE 字符串（不含 RRULE: 前缀，如 FREQ=DAILY）；remind_advance_minutes 为非负整数列表（如 [1440, 720]）或 null。"
         )
         try:
-            from openai import AsyncOpenAI
-            async with AsyncOpenAI(
-                api_key=key,
-                base_url=config_manager.get("llm_base_url"),
-                timeout=float(config_manager.get("llm_timeout_seconds", 30)),
-                max_retries=1,
-            ) as client:
-                response = await client.chat.completions.create(
-                    model=config_manager.get("llm_model", "glm-4-flash"),
-                    messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
-                    temperature=0.1,
+            import httpx
+            base_url = str(config_manager.get("llm_base_url") or "https://open.bigmodel.cn/api/paas/v4/").strip().rstrip("/")
+            endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+            timeout_sec = float(config_manager.get("llm_timeout_seconds", 30) or 30)
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                resp = await client.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={
+                        "model": config_manager.get("llm_model", "glm-4-flash"),
+                        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
+                        "temperature": 0.1,
+                    },
                 )
-            content = (response.choices[0].message.content or "").strip()
+                resp.raise_for_status()
+                resp_data = resp.json()
+            choices = resp_data.get("choices") or []
+            content = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
             if content.startswith("```"):
                 content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
             match_json = re.search(r"\{.*\}", content, flags=re.S)
@@ -396,17 +401,29 @@ class NLUEngine:
         started = time.perf_counter()
         try:
             if not base_url or not api_key or not model:
-                raise ValueError("Missing connection settings")
-            from openai import AsyncOpenAI
-            async with AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=20, max_retries=0) as client:
-                response = await client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": "Reply OK."}], max_tokens=16,
+                raise ValueError("请填写完整的 Base URL、API Key 与模型名称")
+            import httpx
+            clean_base = base_url.strip().rstrip("/")
+            endpoint = clean_base if clean_base.endswith("/chat/completions") else f"{clean_base}/chat/completions"
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"},
+                    json={
+                        "model": model.strip(),
+                        "messages": [{"role": "user", "content": "Reply OK."}],
+                        "max_tokens": 16,
+                    },
                 )
-            if not response.choices:
+            if resp.status_code != 200:
+                err_detail = resp.text[:160]
+                return False, f"HTTP {resp.status_code}: {err_detail}", int((time.perf_counter() - started) * 1000)
+            data = resp.json()
+            if not data.get("choices"):
                 raise ValueError("Empty model response")
             return True, "模型连接成功", int((time.perf_counter() - started) * 1000)
         except Exception as exc:
-            return False, f"模型连接失败（{type(exc).__name__}），请检查地址、密钥及模型名称。", int((time.perf_counter() - started) * 1000)
+            return False, f"模型连接失败（{type(exc).__name__}: {exc}）", int((time.perf_counter() - started) * 1000)
 
 
 nlu_engine = NLUEngine()
