@@ -85,7 +85,11 @@ def run_all_tests() -> None:
         s2 = client.post("/api/chat/simulate", json={"text": "提醒我2小时后喝水，并且重复提醒"}).json()
         assert s2["ok"] and "已记录：喝水" in s2["reply"] and "FREQ=DAILY" in s2["reply"]
         msg_id_2 = s2["message_id"]
-        print("✅ [3/10] 自然语言日程创建（双向语序 + RRULE 周期重复）正常")
+
+        s3 = client.post("/api/chat/simulate", json={"text": "明天上午11点联系吉祥航空留个座位"}).json()
+        assert s3["ok"] and "已记录：联系吉祥航空留个座位" in s3["reply"] and "11:00" in s3["reply"]
+        msg_id_3 = s3["message_id"]
+        print("✅ [3/10] 自然语言日程创建（相对/绝对时刻 + 双向语序 + RRULE 周期重复）正常")
 
         # 4. 自然语言创建 DDL 备忘录（绝对日期 + 相对天数 + 自定义提前预警）
         d1 = client.post("/api/chat/simulate", json={"text": "软件工程作业最晚11月5日23:59截止"}).json()
@@ -142,12 +146,12 @@ def run_all_tests() -> None:
         print("✅ [7/10] 未完成事项分级盘点与跨渠道免引用改期（按事项名/#编号）正常")
 
         # 8. 引用回复标记完成与取消清理
-        for mid in (msg_id_1_final, msg_id_2, msg_id_ddl1, msg_id_ddl2, msg_id_notice):
+        for mid in (msg_id_1_final, msg_id_2, msg_id_3, msg_id_ddl1, msg_id_ddl2, msg_id_notice):
             res = client.post("/api/chat/simulate", json={"text": "已完成", "reply_to_msg_id": mid}).json()
             assert res["ok"] and "✅ 已完成" in res["reply"]
         # 清理测试产生的历史任务，保持用户数据库干净
         for t in client.get("/api/tasks").json()["tasks"]:
-            if t["source_channel"] == "web" and t["title"] in ("拿快递", "喝水", "软件工程作业", "交报销单", "课堂练习第五章"):
+            if t["source_channel"] == "web" and t["title"] in ("拿快递", "喝水", "联系吉祥航空留个座位", "软件工程作业", "交报销单", "课堂练习第五章"):
                 client.delete(f"/api/tasks/{t['id']}")
         print("✅ [8/10] 引用回复标记完成及 APScheduler 定时任务同步清理正常")
 

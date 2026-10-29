@@ -218,7 +218,7 @@ _DT_PART_PATTERN = (
 
 _TIME_RANGE_RE = re.compile(
     rf"(?P<label>(?:作答|提交|截止|开放|有效|考试|活动|会议|开始|结束|持续|起止)?(?:时间|日期|期限)\s*[:：]\s*)?"
-    rf"(?P<start>{_DT_PART_PATTERN})\s*(?:至|到|~|～|—|–|--|-|to)\s*(?P<end>{_DT_PART_PATTERN})",
+    rf"(?P<start>{_DT_PART_PATTERN})\s*(?:至|到|~|～|—|–|--|\s-\s|to)\s*(?P<end>{_DT_PART_PATTERN})",
     re.I,
 )
 
@@ -273,12 +273,16 @@ def _parse_notice_or_time_range(text: str, now: datetime) -> NLUResult | None:
     end_dt = _parse_cn_datetime(m_range.group("end"), now, default_date=start_dt)
     if end_dt is None:
         return None
-    if end_dt < start_dt:
-        # 若跨年（如 12-28 至 01-05）导致 end_dt 年份偏小，自动 +1 年
-        try:
-            end_dt = end_dt.replace(year=end_dt.year + 1)
-        except ValueError:
-            pass
+    if end_dt <= start_dt:
+        if end_dt.date() == start_dt.date() and start_dt.hour >= 12 and 1 <= end_dt.hour <= 11:
+            end_dt += timedelta(hours=12)
+        elif end_dt.date() < start_dt.date() and (start_dt.date() - end_dt.date()).days > 60:
+            try:
+                end_dt = end_dt.replace(year=end_dt.year + 1)
+            except ValueError:
+                pass
+    if end_dt <= start_dt:
+        return None
 
     # 提取元数据（如 "题量: 1", "满分: 100"）放入 description
     noise_items = [m.group(0).strip() for m in _NOISE_KV_RE.finditer(body_text)]
@@ -420,7 +424,7 @@ class NLUEngine:
                     pass
 
             m_named_resched = re.match(
-                r"^(?:把|将)?\s*(?P<target>#\d+|.+?)\s*(?:的)?(?:截止时间|开始时间|提醒时间|时间)?(?:是|为|设为|改到|改为|改成|调整到|调整为|推到|推迟到|延后到|换到)\s*(?P<time_expr>.+?)(?:吧|再提醒(?:我)?)?$",
+                r"^(?:把|将)?\s*(?P<target>#\d+|.+?)\s*(?:的)?(?:截止时间|开始时间|提醒时间|时间)?(?:改到|改为|改成|调整到|调整为|推到|推迟到|延后到|换到)\s*(?P<time_expr>.+?)(?:吧|再提醒(?:我)?)?$",
                 text.strip(" ，。！？!?"),
             )
             if m_named_resched:
@@ -480,7 +484,7 @@ class NLUEngine:
                         remind_advance_minutes=adv_mins,
                     )
 
-            # L1-B: 相对时间日程（双向兼容 "提醒我半个小时后拿快递" 与 "半个小时后提醒我拿快递"）
+            # L1-B: 相对时间与显式日期时刻日程（如 "30分钟后提醒我拿快递"、"明天上午11点联系吉祥航空留个座位"）
             body_sched, sched_adv = _extract_advance_minutes(text)
             body_sched, rrule = _extract_rrule_and_clean_title(body_sched)
             m_rel1 = re.fullmatch(rf"(?:请)?提醒我\s*{_DURATION}\s*(?:之)?后\s*(?:去|要|得)?(?P<title>.+)", body_sched)
@@ -504,36 +508,71 @@ class NLUEngine:
                 except (ValueError, OverflowError):
                     return NLUResult(intent=IntentType.UNKNOWN)
 
+            m_abs_sched = re.fullmatch(
+                r"(?:(?:请)?提醒我\s*)?"
+                r"(?P<dt_expr>(?:(?:\d{4}\s*[年/.-])?\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*(?:日|号)?|今天|今日|明天|明日|后天|大后天)"
+                r"\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上|晚间)?\s*(?:\d{1,2}|[零〇一二两三四五六七八九十]+)\s*[:：点时]\s*(?:半|(?:\d{1,2}|[零〇一二两三四五六七八九十]+)\s*分?)?)"
+                r"\s*(?:(?:请)?提醒我\s*)?(?:去|要|得)?(?P<title>.+)",
+                body_sched,
+            )
+            if m_abs_sched:
+                raw_title = m_abs_sched.group("title").strip(" ，。")
+                if raw_title and not re.match(r"^(?:前|之前|以前|至|到|~|～|-)", raw_title) and not re.search(r"截止|最晚|最迟|DDL", raw_title, re.I):
+                    sched_dt = _parse_cn_datetime(m_abs_sched.group("dt_expr"), now)
+                    if sched_dt is not None:
+                        return NLUResult(
+                            intent=IntentType.CREATE_SCHEDULE,
+                            title=raw_title,
+                            start_time=sched_dt,
+                            rrule_str=rrule,
+                            remind_advance_minutes=sched_adv,
+                        )
+
         return await self._parse_llm(text, has_reply)
 
     async def parse_message(self, text: str, has_reply: bool = False) -> NLUResult:
         return await self.parse(text, has_reply=has_reply)
 
     def _normalize_llm_result(self, result: NLUResult, text: str, has_reply: bool, now: datetime) -> NLUResult:
-        """对 LLM 返回结果执行通用后处理兜底，防止时间区间误取开始时间或引用回复误判为新建。"""
+        """对 LLM 返回结果执行通用后处理兜底，防止时间区间误取开始时间、单时间点误填相同 end_time 或引用回复误判为新建。"""
         if has_reply:
             # 引用已有任务时，只要提取到了任何时间或提醒变更，统一归并为 modify_task
             target_dt = result.deadline or result.end_time or result.start_time
             if result.intent in (IntentType.CREATE_SCHEDULE, IntentType.CREATE_MEMO_DDL, IntentType.UNKNOWN):
                 if target_dt or result.snooze_minutes or result.remind_advance_minutes or result.rrule_str:
                     result.intent = IntentType.MODIFY_TASK
-                    if target_dt:
-                        result.start_time = target_dt
-                        result.deadline = target_dt
                     if not re.search(r"标题|改名|叫做|改为", text):
                         result.title = None
+            if result.intent == IntentType.MODIFY_TASK and target_dt:
+                result.start_time = target_dt
+                result.deadline = target_dt
+                result.end_time = None
             return result
 
-        # 非引用场景：若 LLM 同时给出了 start_time 和 end_time（或原文本是时间段），且属于长跨度/作业/DDL
-        if result.start_time and result.end_time and result.end_time > result.start_time:
-            span = result.end_time - result.start_time
-            if _DDL_HINT_RE.search(text) or span >= timedelta(hours=12) or (result.start_time <= now < result.end_time):
-                result.intent = IntentType.CREATE_MEMO_DDL
-                result.deadline = result.end_time
-                result.start_time = None
+        # 非引用场景：
+        # 1. 若 LLM 同时给出了 start_time 和 end_time
+        if result.start_time and result.end_time:
+            if result.end_time <= result.start_time:
+                # 单时间点日程被 LLM 重复填入了相同的 start_time 和 end_time，直接清空冗余的 end_time
                 result.end_time = None
-        elif result.intent == IntentType.CREATE_MEMO_DDL and not result.deadline:
-            result.deadline = result.end_time or result.start_time
+            else:
+                span = result.end_time - result.start_time
+                if _DDL_HINT_RE.search(text) or span >= timedelta(hours=12) or (result.start_time <= now < result.end_time):
+                    result.intent = IntentType.CREATE_MEMO_DDL
+                    result.deadline = result.end_time
+                    result.start_time = None
+                    result.end_time = None
+
+        # 2. 对齐各意图的标准时间槽位
+        if result.intent == IntentType.CREATE_MEMO_DDL:
+            result.deadline = result.deadline or result.end_time or result.start_time
+            result.start_time = None
+            result.end_time = None
+        elif result.intent == IntentType.CREATE_SCHEDULE:
+            if not result.start_time:
+                result.start_time = result.deadline or result.end_time
+                result.end_time = None
+            result.deadline = None
         return result
 
     async def _parse_llm(self, text: str, has_reply: bool) -> NLUResult:
@@ -550,9 +589,9 @@ class NLUEngine:
             "intent, title, description, start_time, end_time, deadline, offset_minutes, rrule_str, remind_advance_minutes, snooze_minutes（缺失项填 null）。\n"
             "核心规则：\n"
             "1. intent 取值只能是：create_schedule, create_memo_ddl, modify_task, complete_task, cancel_task, query_pending, unknown。\n"
-            "2. 当 has_reply=True（用户引用了某条已有事项）时：用户的自然语言（如'截止时间是11-07 11:52'、'改到明天下午3点'、'提前2小时提醒'）是在修改该事项！此时 intent 必须为 modify_task，将新时间同时填入 start_time 和 deadline，且不要把'截止时间'当成 title（除非用户明确要求改标题，否则 title 填 null）。\n"
-            "3. 当文本包含时间区间（如 '作答时间:10-27 11:52至11-07 11:52'、'开放时间 A ~ B'）或属于作业/练习/测验/实验/提交任务时：intent 必须为 create_memo_ddl，且必须取区间的【结束时间】（如 11-07 11:52）填入 deadline，绝不能把开始时间当作日程提醒时间！同时把题量、满分等附加信息放入 description，title 只保留干净的事项名（如'课堂练习第五章'）。\n"
-            "4. 只有短时的具体活动或会议（如'明天14:00至15:30开组会'）才设为 create_schedule，填入 start_time 与 end_time。\n"
+            "2. 当 has_reply=True（用户引用了某条已有事项）时：用户的自然语言（如'截止时间是11-07 11:52'、'改到明天下午3点'、'提前2小时提醒'）是在修改该事项！此时 intent 必须为 modify_task，将新时间填入 start_time 和 deadline，end_time 填 null，title 填 null。\n"
+            "3. 当文本包含起止时间区间且属于作业/练习/测验/实验/提交任务（如 '作答时间:10-27 11:52至11-07 11:52'），或包含'截止/最晚/最迟/DDL/前完成/前交'时：intent 必须为 create_memo_ddl，取截止时间（或区间的【结束时间】11-07 11:52）填入 deadline，start_time 和 end_time 必须填 null！\n"
+            "4. 普通单时间点日程（如'明天上午11点联系吉祥航空留个座位'、'半小时后提醒我开会'）intent 设为 create_schedule，将提醒时间填入 start_time，end_time 必须填 null！只有用户明确说出起止时间段的短时会议（如'明天14:00至15:30开组会'）才同时填 start_time 与 end_time（且 end_time 必须晚于 start_time）。\n"
             "5. 若用户表达相对当前时间的偏移（如'半个小时后'、'45分钟后'），把正整数分钟填入 offset_minutes，同时计算 ISO8601 时间填入 start_time 或 deadline。\n"
             "6. 具体日期时刻请转为带时区偏移的 ISO8601 格式（如 2026-11-07T11:52:00+08:00）；若未写年份则默认为当前年份。\n"
             "7. 每天/每周等周期转为 RFC5545 RRULE 字符串（不含 RRULE: 前缀，如 FREQ=DAILY）；remind_advance_minutes 为非负整数列表（如 [1440, 720]）或 null。"
@@ -601,7 +640,7 @@ class NLUEngine:
 
             for dt_field in ("start_time", "end_time", "deadline"):
                 val = payload.get(dt_field)
-                if isinstance(val, str) and val.strip():
+                if isinstance(val, str) and val.strip() and "T" not in val:
                     cn_dt = _parse_cn_datetime(val, now)
                     if cn_dt is not None:
                         payload[dt_field] = cn_dt

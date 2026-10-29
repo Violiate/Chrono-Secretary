@@ -168,9 +168,14 @@ class Orchestrator:
         if is_ddl:
             when = result.deadline or result.end_time or result.start_time
             result.deadline = when
+            result.start_time = None
+            result.end_time = None
         else:
             when = result.start_time or result.deadline or result.end_time
             result.start_time = when
+            result.deadline = None
+            if result.end_time is not None and when is not None and self._local(result.end_time) <= self._local(when):
+                result.end_time = None
         if when is None or not result.title or not result.title.strip():
             return "请补充事项名称和具体时间（备忘录请说明截止时间）。", None
         data = {
@@ -208,7 +213,8 @@ class Orchestrator:
             return data.get(key, getattr(task, key, None))
         start, end = value("start_time"), value("end_time")
         if start and end and self._local(end) <= self._local(start):
-            raise ValueError("结束时间必须晚于开始时间")
+            # 若 LLM 将单时间点日程的 end_time 填成与 start_time 相同或更早，自动清空冗余 end_time，不阻断用户保存
+            data["end_time"] = None
         advances = value("remind_advance_minutes")
         if advances is not None and any(type(v) is not int or v < 0 for v in advances):
             raise ValueError("提醒提前量必须为非负整数")
