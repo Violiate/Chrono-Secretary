@@ -106,14 +106,30 @@ def run_all_tests() -> None:
         msg_id_1_updated = q_snooze["message_id"]
         print("✅ [5/10] 引用回复（Quote Reply）相对推迟（推迟半小时）正常")
 
-        # 6. 方法 A：引用回复改为具体日期时间
+        # 6. 方法 A：引用回复改为具体日期时间（含“改到明天下午3点”与“截止时间是11-07 11:52”）
         q_resched = client.post(
             "/api/chat/simulate",
             json={"text": "改到明天下午3点", "reply_to_msg_id": msg_id_1_updated},
         ).json()
         assert q_resched["ok"] and "15:00" in q_resched["reply"]
-        msg_id_1_final = q_resched["message_id"]
-        print("✅ [6/10] 引用回复（Quote Reply）绝对时间改期（改到明天下午3点）正常")
+        msg_id_1_step2 = q_resched["message_id"]
+
+        q_resched_ddl = client.post(
+            "/api/chat/simulate",
+            json={"text": "截止时间是11-07 11:52", "reply_to_msg_id": msg_id_1_step2},
+        ).json()
+        assert q_resched_ddl["ok"] and "11-07 11:52" in q_resched_ddl["reply"]
+        msg_id_1_final = q_resched_ddl["message_id"]
+
+        # 6b. 通用多行通知/作业卡片时间区间提取（应取结束时间为 DDL 截止时间，并清洗题量/满分噪音）
+        c_notice = client.post(
+            "/api/chat/simulate",
+            json={"text": "课堂练习第五章\n题量: 1 满分: 100 作答时间:10-27 11:52至11-07 11:52"},
+        ).json()
+        assert c_notice["ok"] and "✅ 已记录：课堂练习第五章" in c_notice["reply"]
+        assert "截止：" in c_notice["reply"] and "11-07 11:52" in c_notice["reply"]
+        msg_id_notice = c_notice["message_id"]
+        print("✅ [6/10] 引用回复改期（含『截止时间是11-07 11:52』）与多行通知时间区间 DDL 提取正常")
 
         # 7. 询问“我还有什么事情没做”按截止紧急度分级汇报 + 跨渠道免引用按名称/编号直接改期
         q_pending = client.post("/api/chat/simulate", json={"text": "我还有什么事情没做"}).json()
@@ -126,12 +142,12 @@ def run_all_tests() -> None:
         print("✅ [7/10] 未完成事项分级盘点与跨渠道免引用改期（按事项名/#编号）正常")
 
         # 8. 引用回复标记完成与取消清理
-        for mid in (msg_id_1_final, msg_id_2, msg_id_ddl1, msg_id_ddl2):
+        for mid in (msg_id_1_final, msg_id_2, msg_id_ddl1, msg_id_ddl2, msg_id_notice):
             res = client.post("/api/chat/simulate", json={"text": "已完成", "reply_to_msg_id": mid}).json()
             assert res["ok"] and "✅ 已完成" in res["reply"]
         # 清理测试产生的历史任务，保持用户数据库干净
         for t in client.get("/api/tasks").json()["tasks"]:
-            if t["source_channel"] == "web" and t["title"] in ("拿快递", "喝水", "软件工程作业", "交报销单"):
+            if t["source_channel"] == "web" and t["title"] in ("拿快递", "喝水", "软件工程作业", "交报销单", "课堂练习第五章"):
                 client.delete(f"/api/tasks/{t['id']}")
         print("✅ [8/10] 引用回复标记完成及 APScheduler 定时任务同步清理正常")
 

@@ -71,26 +71,13 @@ class Orchestrator:
             except Exception:
                 logger.exception("消息处理失败 channel=%s message=%s", msg.channel.value, msg.message_id)
                 text, task = "处理时遇到错误，请先查询待办列表确认是否已保存，再重试。", None
-            # 即使渠道离线，仍返回文案供网页模拟接口展示。
+            # 即使渠道离线，仍返回文案供网页模拟接口展示（仅在当前发起渠道回复，不跨渠道群发）
             from backend.channels.manager import channel_manager
             try:
                 sent_id = await channel_manager.send_message(
                     msg.channel, msg.sender_id, text, context_token=msg.context_token)
                 if sent_id and task is not None:
                     await repo.bind_message_to_task(msg.channel.value, str(sent_id), task.id)
-                # 跨渠道自动同步卡片：若为真实 IM 渠道产生/更新的任务，同步推送至其他已连接的 IM 渠道并绑定引用 ID
-                if task is not None and msg.sender_id not in ("web-simulator", "default"):
-                    for other_ch_val, other_recipient in recipients_map.items():
-                        if other_ch_val == msg.channel.value or not other_recipient:
-                            continue
-                        try:
-                            other_ch = ChannelType(other_ch_val)
-                            sync_text = f"🔄 [跨端同步]\n{text}"
-                            other_msg_id = await channel_manager.send_message(other_ch, other_recipient, sync_text)
-                            if other_msg_id:
-                                await repo.bind_message_to_task(other_ch.value, str(other_msg_id), task.id)
-                        except Exception:
-                            logger.debug("跨端同步推送忽略 (%s)", other_ch_val)
             except Exception:
                 logger.exception("回复发送或引用绑定失败 message=%s", msg.message_id)
             if msg.message_id:
@@ -130,22 +117,28 @@ class Orchestrator:
                 label = "已完成" if status == "completed" else "已取消"
                 suffix = "\n远端日历删除失败，请稍后重试。" if not remote_ok else ""
                 return f"✅ {label}：{task.title}{suffix}", updated
+            # 在引用回复上下文中，若模型将“截止时间是11-07 11:52”等时间补充识别为了新建意图，自动归一为修改当前被引用任务
+            if result.intent in (IntentType.CREATE_SCHEDULE, IntentType.CREATE_MEMO_DDL) and (
+                result.deadline or result.start_time or result.end_time or result.snooze_minutes or result.remind_advance_minutes or result.rrule_str
+            ):
+                result.intent = IntentType.MODIFY_TASK
+                result.title = None
             if result.intent != IntentType.MODIFY_TASK:
-                return "请引用任务回复‘推迟半小时’、‘改到明天下午3点’、‘已完成’或‘取消’。", task
+                return "请引用任务回复‘推迟半小时’、‘改到明天下午3点’、‘截止时间是11-07 11:52’、‘已完成’或‘取消’。", task
             if task.status != "pending":
                 return "这项任务已经完成或取消，无法继续改期，请新建任务。", task
             updates = {}
             is_ddl = task.task_type == "memo_ddl"
             field = "deadline" if is_ddl else "start_time"
             old_time = getattr(task, field)
+            new_dt = (result.deadline or result.end_time or result.start_time) if is_ddl else (result.start_time or result.deadline or result.end_time)
             if result.snooze_minutes is not None:
                 if result.snooze_minutes <= 0 or old_time is None:
                     return "请提供有效的推迟时长或新的具体时间。", task
                 updates[field] = self._local(old_time) + timedelta(minutes=result.snooze_minutes)
-            elif result.deadline or result.start_time:
-                updates[field] = self._local((result.deadline or result.start_time) if is_ddl
-                                            else (result.start_time or result.deadline))
-            if result.title:
+            elif new_dt is not None:
+                updates[field] = self._local(new_dt)
+            if result.title and any(k in msg.text for k in ("改名", "标题", "名称改为", "改成")):
                 updates["title"] = result.title
             if result.description is not None:
                 updates["description"] = result.description
@@ -172,7 +165,12 @@ class Orchestrator:
         if result.intent not in (IntentType.CREATE_SCHEDULE, IntentType.CREATE_MEMO_DDL):
             return "你可以说‘提醒我30分钟后拿快递’，或告诉我事项及截止时间。修改已有任务时请先引用对应消息。", None
         is_ddl = result.intent == IntentType.CREATE_MEMO_DDL
-        when = result.deadline if is_ddl else result.start_time
+        if is_ddl:
+            when = result.deadline or result.end_time or result.start_time
+            result.deadline = when
+        else:
+            when = result.start_time or result.deadline or result.end_time
+            result.start_time = when
         if when is None or not result.title or not result.title.strip():
             return "请补充事项名称和具体时间（备忘录请说明截止时间）。", None
         data = {

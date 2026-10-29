@@ -219,31 +219,15 @@ class SchedulerManager:
             remaining = f"还有 {advance} 分钟"
         text = (f"⏰ {label} [#{task.id}]：{task.title}\n{target:%Y-%m-%d %H:%M}（{remaining}）\n"
                 "💡 引用本条消息回复“推迟半小时”“已完成”，或发送“#编号 推迟半小时”即可调整。")
-        # 收集投递目标：原渠道 + 已记录的其他活跃 IM 渠道（实现跨端同步提醒与双端可引用）
-        targets: dict[str, str] = {}
+        # 在哪个渠道创建的任务，就在哪个渠道推送提醒
         try:
-            origin_ch = ChannelType(task.source_channel)
-            if task.sender_id and task.sender_id not in ("web-simulator", "default"):
-                targets[origin_ch.value] = task.sender_id
+            channel = ChannelType(task.source_channel)
         except ValueError:
-            pass
-        all_cfgs = await repo.get_all_configs()
-        known_map = all_cfgs.get("_scheduler_channel_recipients")
-        if isinstance(known_map, dict):
-            for ch_val, rec_id in known_map.items():
-                if rec_id and rec_id not in ("web-simulator", "default"):
-                    targets.setdefault(str(ch_val), str(rec_id))
-        if not targets:
-            logger.info("任务 #%s 无可用 IM 投递目标，跳过 IM 主动推送", task.id)
+            logger.info("任务 #%s 来源为 %s（非 IM 渠道），跳过 IM 主动推送", task.id, task.source_channel)
             return
-        for ch_val, rec_id in targets.items():
-            try:
-                ch_enum = ChannelType(ch_val)
-                sent = await channel_manager.send_message(ch_enum, rec_id, text)
-                if sent:
-                    await repo.bind_message_to_task(ch_enum.value, str(sent), task.id)
-            except Exception:
-                logger.debug("提醒推送至 %s 失败（已忽略）", ch_val)
+        sent = await channel_manager.send_message(channel, task.sender_id, text)
+        if sent:
+            await repo.bind_message_to_task(channel.value, str(sent), task.id)
 
     async def _matching_task(self, task_id: int, occurrence: str) -> TaskItem | None:
         task = await repo.get_task(task_id)

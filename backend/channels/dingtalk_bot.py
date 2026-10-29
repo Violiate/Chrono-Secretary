@@ -430,13 +430,16 @@ class DingTalkChannelAdapter(BaseChannelAdapter):
             if stored and str(stored).startswith("http"):
                 webhook = str(stored)
 
-        if webhook:
-            msg_id = await self._send_via_webhook(client, webhook, text)
-            if msg_id:
-                return msg_id
-            logger.debug("钉钉 sessionWebhook 发送未返回消息 ID，尝试机器人单聊接口")
+        # 优先走机器人单聊接口 batchSend：既能拿到真实的 processQueryKey 供用户「引用回复」，又避免重复发送
+        robot_msg_id = await self._send_via_robot(client, recipient_id, text)
+        if robot_msg_id:
+            return robot_msg_id
 
-        return await self._send_via_robot(client, recipient_id, text)
+        # 若单聊接口不可用（例如群聊场景），回退使用 sessionWebhook 发送一次
+        if webhook:
+            return await self._send_via_webhook(client, webhook, text)
+
+        return None
 
     async def _send_via_webhook(
         self,
@@ -454,7 +457,8 @@ class DingTalkChannelAdapter(BaseChannelAdapter):
             if errcode not in (0, None):
                 logger.warning("钉钉 sessionWebhook 发送失败: %s", data)
                 return None
-            return data.get("msgId") or data.get("processQueryKey") or data.get("messageId")
+            # sessionWebhook 成功时通常只返回 {"errcode": 0, "errmsg": "ok"}，必须返回非空标识防止上层误判失败而二次重发
+            return str(data.get("msgId") or data.get("processQueryKey") or data.get("messageId") or f"dt-wh-{uuid.uuid4().hex[:12]}")
         except Exception as exc:  # noqa: BLE001
             logger.warning("钉钉 sessionWebhook 发送异常: %s", exc)
             return None
