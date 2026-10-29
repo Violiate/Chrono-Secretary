@@ -22,6 +22,8 @@ services:
       TZ: Asia/Shanghai
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+      # 公网部署建议设置管理员面板访问口令（留空则可在网页后台设置或内网免密访问）
+      CHRONO_ADMIN_PASSWORD: "${CHRONO_ADMIN_PASSWORD:-}"
 
     volumes:
       # 数据库 + 任何需要持久化的运行时文件

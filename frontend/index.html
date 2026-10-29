@@ -441,12 +441,15 @@
           </div>
         </div>
 
-        <div class="pt-3 border-t border-zinc-100 flex items-center justify-between">
+        <div class="pt-3 border-t border-zinc-100 grid sm:grid-cols-2 gap-3 items-center">
           <div class="flex items-center gap-2">
-            <label class="text-xs font-medium text-zinc-600">系统时区</label>
-            <input v-model.trim="cfg.timezone" class="input-base !w-40 !py-1 font-mono text-xs" placeholder="Asia/Shanghai" />
+            <label class="text-xs font-medium text-zinc-600 shrink-0">系统时区</label>
+            <input v-model.trim="cfg.timezone" class="input-base !w-44 !py-1 font-mono text-xs" placeholder="Asia/Shanghai" />
           </div>
-          <span class="text-[11px] text-zinc-400">所有修改均实时自动同步至数据库</span>
+          <div class="flex items-center gap-2">
+            <label class="text-xs font-medium text-zinc-600 shrink-0">面板访问口令 (可选)</label>
+            <input v-model.trim="cfg.admin_password" type="password" class="input-base !py-1 font-mono text-xs" placeholder="留空免密；公网部署建议设置" autocomplete="new-password" />
+          </div>
         </div>
       </div>
     </section>
@@ -711,6 +714,20 @@
     </div>
   </div>
 
+  <!-- 管理员口令解锁弹窗 -->
+  <div v-if="showAuthModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px] p-4 flex items-center justify-center">
+    <div class="w-full max-w-xs panel p-5 space-y-4">
+      <div class="space-y-1">
+        <h3 class="text-sm font-semibold text-zinc-900">面板访问保护</h3>
+        <p class="text-xs text-zinc-500">当前实例已启用管理员口令保护，请输入访问口令以解锁控制台。</p>
+      </div>
+      <input v-model.trim="authInput" type="password" @keyup.enter="submitAuth" class="input-base font-mono text-xs" placeholder="请输入管理员口令" autofocus />
+      <div class="flex justify-end gap-2">
+        <button class="btn-dark w-full justify-center" @click="submitAuth">解锁面板</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 极简底部轻提示 -->
   <div v-if="toast.show" class="fixed bottom-5 right-5 z-50">
     <div class="px-3.5 py-2 rounded-lg shadow-md border text-xs font-medium flex items-center gap-2"
@@ -743,7 +760,8 @@ const DEFAULT_CFG = {
   google_client_id: '',
   google_client_secret: '',
   google_refresh_token: '',
-  timezone: 'Asia/Shanghai'
+  timezone: 'Asia/Shanghai',
+  admin_password: ''
 };
 
 const LLM_PRESETS = [
@@ -838,6 +856,10 @@ Vue.createApp({
       calTesting: { caldav: false, google: false },
       calResult: { caldav: null, google: null },
 
+      showAuthModal: false,
+      authInput: '',
+      adminPassword: localStorage.getItem('chrono_admin_password') || '',
+
       toast: { show: false, message: '', type: 'info' },
       toastTimer: null,
       tickTimer: null,
@@ -914,6 +936,9 @@ Vue.createApp({
 
     async api(path, options) {
       const opts = Object.assign({ headers: {} }, options || {});
+      if (this.adminPassword) {
+        opts.headers['X-Admin-Password'] = this.adminPassword;
+      }
       if (opts.body && typeof opts.body !== 'string') {
         opts.headers['Content-Type'] = 'application/json';
         opts.body = JSON.stringify(opts.body);
@@ -921,11 +946,30 @@ Vue.createApp({
       const resp = await fetch(path, opts);
       let data = null;
       try { data = await resp.json(); } catch (e) { data = null; }
+      if (resp.status === 401) {
+        this.showAuthModal = true;
+      }
       if (!resp.ok) {
         const detail = data && (data.detail || data.message) ? (data.detail || data.message) : `HTTP ${resp.status}`;
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
       }
       return data || {};
+    },
+
+    async submitAuth() {
+      const pwd = (this.authInput || '').trim();
+      if (!pwd) return;
+      try {
+        await this.api('/api/auth/login', { method: 'POST', body: { password: pwd } });
+        this.adminPassword = pwd;
+        localStorage.setItem('chrono_admin_password', pwd);
+        this.showAuthModal = false;
+        this.authInput = '';
+        this.notify('面板已解锁');
+        await this.refreshAll();
+      } catch (e) {
+        this.notify(e.message || '口令错误', 'error');
+      }
     },
 
     notify(message, type = 'info') {
@@ -1006,7 +1050,12 @@ Vue.createApp({
         this.cfg.default_ddl_advances = Array.isArray(this.cfg.default_ddl_advances)
           ? this.cfg.default_ddl_advances.map(Number) : [];
         this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
-        this.icsFeedUrl = data.ics_feed_url || '';
+        let feedUrl = data.ics_feed_url || '';
+        const token = data.ics_feed_token || incoming.ics_feed_token || '';
+        if (token && window.location && window.location.origin && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(feedUrl)) {
+          feedUrl = `${window.location.origin}/api/calendar/feed/${token}.ics`;
+        }
+        this.icsFeedUrl = feedUrl;
         this.lastSavedSnapshot = this.serializeCfg();
         this.$nextTick(() => {
           this.configReady = true;
@@ -1050,8 +1099,11 @@ Vue.createApp({
           google_calendar_enabled: !!this.cfg.google_calendar_enabled
         });
         const data = await this.api('/api/config', { method: 'PUT', body: { config: payload } });
+        if (typeof payload.admin_password === 'string' && !payload.admin_password.includes('••••')) {
+          this.adminPassword = payload.admin_password;
+          localStorage.setItem('chrono_admin_password', payload.admin_password);
+        }
         this.channelStatus = Object.assign({ wechat_claw: false, dingtalk: false, telegram: false }, data.channel_status || {});
-        this.icsFeedUrl = data.ics_feed_url || this.icsFeedUrl;
         this.lastSavedSnapshot = this.serializeCfg();
         this.autoSaveState = 'saved';
       } catch (e) {

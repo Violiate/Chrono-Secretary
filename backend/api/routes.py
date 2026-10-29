@@ -12,11 +12,13 @@ REST API 路由层（DeepSeek 负责 / 阶段 D3）。
 """
 
 import asyncio
+import hmac
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.calendars.ics_generator import ics_generator
@@ -32,15 +34,84 @@ from backend.core.schemas import ChannelType, UnifiedIncomingMessage
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["Chrono Secretary"])
-
 WEB_SIMULATOR_SENDER = "web-simulator"
 ACTIVE_STATUSES = ("pending",)
 DONE_STATUSES = ("completed", "cancelled")
-RESERVED_CONFIG_KEYS = ("channel_status", "ics_feed_url")
+RESERVED_CONFIG_KEYS = ("channel_status", "ics_feed_url", "secret_configured", "auth_required")
+# 敏感密钥字段：GET /api/config 时自动脱敏为掩码，PUT /api/config 时若收到掩码则自动跳过不覆盖原值
+SECRET_CONFIG_KEYS = (
+    "llm_api_key",
+    "wechat_claw_token",
+    "dingtalk_client_secret",
+    "telegram_bot_token",
+    "caldav_password",
+    "google_credentials_json",
+    "google_client_secret",
+    "google_refresh_token",
+    "admin_password",
+)
+MASK_TOKEN = "••••••••"
 # 这两个键必须落库为非负整数列表，前端偶尔会传 ["10", 0] / "10,0" / [10.0]，
 # 在路由层统一规范化，避免 config_manager 的严格校验把整次保存打成 500。
 INT_LIST_KEYS = ("default_schedule_remind_minutes", "default_ddl_advances")
+
+
+def _expected_admin_password() -> str:
+    """获取当前生效的面板管理口令（环境变量 CHRONO_ADMIN_PASSWORD 优先，其次为数据库配置）。"""
+    env_pwd = os.environ.get("CHRONO_ADMIN_PASSWORD", "").strip()
+    if env_pwd:
+        return env_pwd
+    try:
+        return str(config_manager.get("admin_password", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _extract_request_password(request: Request) -> str:
+    """从请求头 X-Admin-Password 或 Authorization: Bearer 提取管理口令。"""
+    header_pwd = (request.headers.get("x-admin-password") or "").strip()
+    if header_pwd:
+        return header_pwd
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+async def verify_admin_auth(request: Request) -> None:
+    """当设置了管理口令时，拦截未授权的 API 请求（放行探活、登录校验与 .ics 日历订阅流）。"""
+    path = request.url.path
+    if (
+        path.endswith("/health")
+        or path.endswith("/status")
+        or path.endswith("/auth/login")
+        or ("/calendar/feed/" in path and path.endswith(".ics"))
+    ):
+        return
+    expected = _expected_admin_password()
+    if not expected:
+        return
+    provided = _extract_request_password(request)
+    if not provided or not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="面板已启用访问保护，请输入管理员口令")
+
+
+def _mask_secret(value: Any) -> str:
+    """对敏感密钥进行脱敏显示，防止 GET /api/config 明文泄露密钥。"""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 8:
+        return MASK_TOKEN
+    return f"{raw[:3]}{MASK_TOKEN}{raw[-2:]}"
+
+
+def _is_masked_secret(value: Any) -> bool:
+    """判断前端回传的值是否为未修改的脱敏掩码。"""
+    return isinstance(value, str) and MASK_TOKEN in value
+
+
+router = APIRouter(prefix="/api", tags=["Chrono Secretary"], dependencies=[Depends(verify_admin_auth)])
 
 
 # --------------------------------------------------------------------------- #
@@ -116,15 +187,18 @@ def _coerce_minute_list(value: Any) -> List[int]:
 
 
 def _public_base_url(request: Optional[Request]) -> str:
-    """拼接 ICS 订阅地址用的外部基地址（支持反向代理的 X-Forwarded-*）。"""
+    """拼接 ICS 订阅地址用的外部基地址（支持反向代理的 X-Forwarded-* 与 Host 头）。"""
     if request is None:
         return "http://localhost:8000"
     forwarded_proto = request.headers.get("x-forwarded-proto")
     forwarded_host = request.headers.get("x-forwarded-host")
+    proto = (forwarded_proto or request.url.scheme or "http").split(",")[0].strip()
     if forwarded_host:
-        proto = (forwarded_proto or request.url.scheme or "http").split(",")[0].strip()
         host = forwarded_host.split(",")[0].strip()
         return f"{proto}://{host}"
+    host_header = (request.headers.get("host") or "").split(",")[0].strip()
+    if host_header:
+        return f"{proto}://{host_header}"
     return str(request.base_url).rstrip("/")
 
 
@@ -138,7 +212,7 @@ def _current_ics_token() -> str:
 
 
 async def _build_config_response(request: Optional[Request]) -> Dict[str, Any]:
-    """``GET /api/config`` 与 ``PUT /api/config`` 共用的响应结构。"""
+    """``GET /api/config`` 与 ``PUT /api/config`` 共用的响应结构（对所有敏感密钥做掩码脱敏）。"""
     try:
         cfg = config_manager.get_all()
     except Exception as exc:  # noqa: BLE001
@@ -152,6 +226,15 @@ async def _build_config_response(request: Optional[Request]) -> Dict[str, Any]:
         token = str(await repo.get_config("ics_feed_token", "") or "")
     cfg["ics_feed_token"] = token
 
+    # 敏感密钥脱敏：GET /api/config 绝不明文暴露密钥
+    secret_configured: Dict[str, bool] = {}
+    for s_key in SECRET_CONFIG_KEYS:
+        raw_val = cfg.get(s_key)
+        has_val = bool(str(raw_val or "").strip())
+        secret_configured[s_key] = has_val
+        if has_val:
+            cfg[s_key] = _mask_secret(raw_val)
+
     try:
         channel_status = _normalize_status_map(channel_manager.get_status())
     except Exception as exc:  # noqa: BLE001
@@ -164,6 +247,8 @@ async def _build_config_response(request: Optional[Request]) -> Dict[str, Any]:
     return {
         "ok": True,
         "config": cfg,
+        "secret_configured": secret_configured,
+        "auth_required": bool(_expected_admin_password()),
         "channel_status": channel_status,
         "ics_feed_url": ics_feed_url,
         "ics_feed_token": token,
@@ -226,6 +311,18 @@ async def health() -> Dict[str, Any]:
     }
 
 
+@router.post("/auth/login")
+async def auth_login(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """验证管理员访问口令。"""
+    expected = _expected_admin_password()
+    if not expected:
+        return {"ok": True, "auth_required": False, "message": "未设置访问口令，直接放行"}
+    provided = str((payload or {}).get("password") or "").strip()
+    if provided and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        return {"ok": True, "auth_required": True, "message": "解锁成功"}
+    raise HTTPException(status_code=401, detail="管理员口令错误")
+
+
 # --------------------------------------------------------------------------- #
 # 配置：读取 / 热写入
 # --------------------------------------------------------------------------- #
@@ -248,6 +345,9 @@ async def update_config(payload: Dict[str, Any], request: Request) -> Dict[str, 
             continue
         if key == "ics_feed_token" and not value:
             continue  # 空值不允许清空订阅 token
+        # 如果前端传回的是未改动的脱敏掩码（如 sk-••••••••90），自动跳过不覆盖真实密钥
+        if key in SECRET_CONFIG_KEYS and _is_masked_secret(value):
+            continue
         if key in INT_LIST_KEYS:
             value = _coerce_minute_list(value)
         updates[key] = value
@@ -278,7 +378,11 @@ async def update_config(payload: Dict[str, Any], request: Request) -> Dict[str, 
 @router.post("/llm/test")
 async def test_llm(payload: LLMTestPayload) -> Dict[str, Any]:
     base_url = (payload.base_url or str(config_manager.get("llm_base_url", "") or "")).strip()
-    api_key = (payload.api_key or str(config_manager.get("llm_api_key", "") or "")).strip()
+    raw_key = (payload.api_key or "").strip()
+    if not raw_key or _is_masked_secret(raw_key):
+        api_key = str(config_manager.get("llm_api_key", "") or "").strip()
+    else:
+        api_key = raw_key
     model = (payload.model or str(config_manager.get("llm_model", "") or "")).strip()
 
     if not base_url or not model:
@@ -364,7 +468,7 @@ async def wechat_qrcode_status(qrcode_id: str = Query(default="")) -> Dict[str, 
         "ok": True,
         "status": status,
         "online": online,
-        "bot_token": payload.get("bot_token"),
+        "bot_token": _mask_secret(payload.get("bot_token")),
         "message": str(payload.get("message") or ""),
     }
 
@@ -378,8 +482,13 @@ async def test_calendar(payload: CalendarTestPayload) -> Dict[str, Any]:
     if provider not in ("caldav", "google"):
         return {"ok": False, "message": f"未知的日历类型：{provider}"}
 
+    cfg_override = dict(payload.config) if isinstance(payload.config, dict) else {}
+    for s_key in SECRET_CONFIG_KEYS:
+        if s_key in cfg_override and _is_masked_secret(cfg_override[s_key]):
+            cfg_override[s_key] = config_manager.get(s_key, "")
+
     try:
-        ok, message = await calendar_manager.test_connection(provider, payload.config)
+        ok, message = await calendar_manager.test_connection(provider, cfg_override or None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("日历连接测试异常（%s）: %s", provider, exc)
         return {"ok": False, "message": f"测试异常：{exc}"}

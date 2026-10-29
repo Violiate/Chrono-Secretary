@@ -12,6 +12,7 @@ from backend.core.repository import repo
 logger = logging.getLogger(__name__)
 DEFAULT_CONFIGS: dict[str, Any] = {
     "timezone": "Asia/Shanghai",
+    "admin_password": "",
     "llm_base_url": "https://open.bigmodel.cn/api/paas/v4/",
     "llm_api_key": "", "llm_model": "glm-4-flash", "llm_timeout_seconds": 30,
     "default_schedule_remind_minutes": [10, 0],
@@ -23,7 +24,8 @@ DEFAULT_CONFIGS: dict[str, Any] = {
     "caldav_enabled": False, "caldav_url": "https://caldav.icloud.com",
     "caldav_username": "", "caldav_password": "", "caldav_calendar_name": "",
     "google_calendar_enabled": False, "google_calendar_id": "primary",
-    "google_credentials": {}, "google_client_id": "", "google_client_secret": "",
+    "google_credentials": {}, "google_credentials_json": "",
+    "google_client_id": "", "google_client_secret": "",
     "google_refresh_token": "",
 }
 

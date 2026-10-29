@@ -15,7 +15,9 @@ FastAPI 入口（DeepSeek 负责 / 阶段 D3）。
 """
 
 import logging
+import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -67,6 +69,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     print(BANNER)
     logger.info("正在启动 Chrono Secretary…")
 
+    # 检查是否被误配为多进程模式（APScheduler + SQLite 必须单 worker 运行）
+    web_concurrency = int(os.environ.get("WEB_CONCURRENCY", "1") or "1")
+    if web_concurrency > 1:
+        logger.warning("⚠️ 检测到 WEB_CONCURRENCY=%s，APScheduler 内存调度必须以单进程 (workers=1) 运行以避免重复推送！", web_concurrency)
+
     # 1) 数据库是地基，失败必须直接抛出让容器重启
     await repo.init_db()
     logger.info("✅ 数据库就绪")
@@ -74,7 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 2) 配置总线（失败也继续，配置总线内部自带默认值兜底）
     try:
         await config_manager.initialize()
-        logger.info("✅ 配置总线已加载")
+        tz_name = str(config_manager.get("timezone", "Asia/Shanghai") or "Asia/Shanghai")
+        os.environ["TZ"] = tz_name
+        if hasattr(time, "tzset"):
+            time.tzset()
+        logger.info("✅ 配置总线已加载 (时区: %s)", tz_name)
     except Exception as exc:  # noqa: BLE001
         logger.exception("配置总线初始化失败，将以默认配置继续运行: %s", exc)
 
@@ -172,5 +183,13 @@ else:  # pragma: no cover - 目录缺失时的友好提示
 if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
-    # 直接 `python -m backend.main` 也能起服务（注意从项目根目录运行）
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=False)
+    # 强制单 worker 运行（APScheduler + SQLite），并开启 proxy_headers 以支持 Nginx/Caddy 反代透传 X-Forwarded-*
+    uvicorn.run(
+        "backend.main:app",
+        host=os.environ.get("CHRONO_HOST", "0.0.0.0"),
+        port=int(os.environ.get("CHRONO_PORT", "8000")),
+        workers=1,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+        reload=False,
+    )

@@ -35,4 +35,4 @@ VOLUME ["/app/data"]
 HEALTHCHECK --interval=30s --timeout=6s --start-period=25s --retries=3 \
     CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).getcode()==200 else 1)"
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]

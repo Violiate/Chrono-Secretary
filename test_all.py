@@ -29,10 +29,45 @@ def run_all_tests() -> None:
         assert r_health.status_code == 200 and r_health.json()["status"] == "ok"
         print("✅ [1/10] Web 前端挂载与 /api/health 探活正常")
 
-        # 2. 动态配置总线 (0重启热更新)
+        # 2. 动态配置总线 (0重启热更新) 与敏感密钥脱敏防泄漏校验
         r_cfg = client.get("/api/config").json()
         ics_token = r_cfg["ics_feed_token"]
         assert len(ics_token) >= 16
+
+        # 敏感密钥脱敏校验：写入测试密钥，GET /api/config 绝不明文返回且含掩码
+        orig_key = config_manager.get("llm_api_key", "")
+        test_secret = "sk-test-super-secret-key-12345"
+        r_put_sec = client.put(
+            "/api/config",
+            json={"config": {"llm_api_key": test_secret}},
+        )
+        assert r_put_sec.status_code == 200
+
+        r_cfg_sec = client.get("/api/config").json()
+        masked_key = r_cfg_sec["config"]["llm_api_key"]
+        assert "••••••••" in masked_key
+        assert test_secret not in masked_key
+        assert r_cfg_sec["secret_configured"]["llm_api_key"] is True
+
+        # 校验将脱敏掩码回传给 PUT /api/config 时，不会覆盖底层的真实密钥
+        r_put_masked = client.put(
+            "/api/config",
+            json={"config": {"llm_api_key": masked_key}},
+        )
+        assert r_put_masked.status_code == 200
+        assert config_manager.get("llm_api_key") == test_secret
+
+        # 校验已有敏感字段（如 wechat_claw_token 非空时）也均包含脱敏掩码
+        for sec_field in ("wechat_claw_token", "admin_password"):
+            val = config_manager.get(sec_field, "")
+            if val:
+                sec_masked = r_cfg_sec["config"][sec_field]
+                assert "••••••••" in sec_masked
+                assert val not in sec_masked
+
+        # 恢复原配置
+        client.put("/api/config", json={"config": {"llm_api_key": orig_key}})
+
         r_put = client.put(
             "/api/config",
             json={"config": {"default_ddl_advances": [1440, 720], "default_schedule_remind_minutes": [10, 0]}},
